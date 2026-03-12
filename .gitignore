@@ -214,3 +214,4 @@ bezierize_animation/outputs/
 bezierize_ablation/run_*/
 edge_data/
 .vscode/
+.DS_Store
