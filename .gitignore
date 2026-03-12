@@ -212,3 +212,5 @@ gt_rgb/
 # Project runtime outputs
 bezierize_animation/outputs/
 bezierize_ablation/run_*/
+HED-BSDS
+.vscode/

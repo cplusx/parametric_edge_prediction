@@ -1,0 +1,104 @@
+data:
+  edge_glob: HED-BSDS/gt_rgb/test/*.png
+  input_root: HED-BSDS/images/test
+  rgb_input: true
+  image_size: 224
+  batch_size: 2
+  val_batch_size: 2
+  num_workers: 0
+  cache_dir: outputs/parametric_edge_training/target_cache
+  target_version: v5_anchor_consistent
+  target_degree: 5
+  min_curve_length: 3.0
+  max_targets: 400
+  val_ratio: 0.1
+  test_ratio: 0.0
+  split_seed: 42
+  limit_samples: null
+  overfit_num_samples: null
+  sample_names: null
+
+model:
+  input_channels: 3
+  target_degree: 5
+  hidden_dim: 256
+  num_queries: 400
+  nheads: 8
+  num_encoder_layers: 2
+  num_decoder_layers: 6
+  dim_feedforward: 1024
+  dropout: 0.0
+  num_feature_levels: 4
+  num_sampling_points: 4
+  deformable_offset_scale: 2.0
+  backbone_name: vit_small_patch14_dinov2
+  backbone_pretrained: true
+  backbone_out_indices: [2, 5, 8, 11]
+  backbone_input_norm: imagenet
+  query_source: two_stage
+  curve_parameterization: endpoint_offsets
+  curve_delta_scale: 0.35
+  curve_extent_min: 0.2
+  curve_extent_max: 1.8
+  interior_delta_ratio: 0.35
+  object_bias: -2.0
+  no_object_bias: 2.0
+  dn_num_groups: 4
+  dn_noise_scale: 0.04
+
+loss:
+  class_loss_type: focal
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  class_cost: 2.0
+  control_cost: 5.0
+  sample_cost: 2.0
+  box_cost: 1.0
+  num_curve_samples: 24
+  ce_weight: 1.0
+  ctrl_weight: 5.0
+  sample_weight: 4.0
+  endpoint_weight: 2.0
+  bbox_weight: 2.0
+  extent_weight: 1.0
+  no_object_weight: 0.05
+  aux_weight: 0.5
+  dn_weight: 1.0
+  dn_curve_weight: 5.0
+  one_to_many_repeat: 2
+  one_to_many_weight: 0.3
+  one_to_many_ce_weight: 1.0
+  one_to_many_ctrl_weight: 3.0
+  one_to_many_sample_weight: 3.0
+  one_to_many_endpoint_weight: 2.0
+  one_to_many_bbox_weight: 2.0
+  one_to_many_extent_weight: 1.0
+  topk_positive_per_gt: 2
+  topk_positive_weight: 0.2
+  distinct_weight: 0.1
+  distinct_topk: 32
+  distinct_spatial_sigma: 0.12
+  count_weight: 0.0
+
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0001
+  lr_step_size: 40
+  lr_gamma: 0.5
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/default_dinov2_deformable
+  max_epochs: 20
+  accelerator: auto
+  devices: 1
+  log_every_n_steps: 1
+  gradient_clip_val: 0.1
+  deterministic: true
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  overfit_batches: 0.0
+
+callbacks:
+  visualization_every_n_epochs: 2
+  visualization_score_threshold: 0.3
+  visualization_max_curves: 96

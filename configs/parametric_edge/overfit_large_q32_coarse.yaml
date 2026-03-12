@@ -1,0 +1,63 @@
+data:
+  batch_size: 1
+  val_batch_size: 1
+  image_size: 192
+  limit_samples: null
+  overfit_num_samples: 1
+  sample_names:
+    - 100007_ann5.png
+  max_targets: 32
+
+model:
+  target_degree: 5
+  hidden_dim: 192
+  num_queries: 32
+  nheads: 8
+  num_encoder_layers: 3
+  num_decoder_layers: 4
+  dim_feedforward: 384
+  dropout: 0.0
+  backbone_norm: group
+  backbone_gn_groups: 8
+  query_init: grid
+  object_bias: -1.0
+  no_object_bias: 1.0
+  dn_num_groups: 0
+  dn_noise_scale: 0.0
+
+loss:
+  class_cost: 2.0
+  control_cost: 5.0
+  sample_cost: 2.0
+  box_cost: 1.0
+  num_curve_samples: 24
+  ce_weight: 1.0
+  ctrl_weight: 5.0
+  sample_weight: 8.0
+  endpoint_weight: 4.0
+  bbox_weight: 4.0
+  no_object_weight: 0.02
+  aux_weight: 0.0
+  dn_weight: 0.0
+  dn_curve_weight: 0.0
+
+optimizer:
+  lr: 0.0002
+  weight_decay: 0.0
+  lr_step_size: 250
+  lr_gamma: 0.5
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_large_100007_ann5_q32
+  max_epochs: 80
+  accelerator: cpu
+  devices: 1
+  overfit_batches: 1
+  limit_train_batches: 1
+  limit_val_batches: 1
+  gradient_clip_val: 0.0
+
+callbacks:
+  visualization_every_n_epochs: 1
+  visualization_score_threshold: 0.15
+  visualization_max_curves: 48

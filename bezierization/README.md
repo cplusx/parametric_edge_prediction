@@ -11,6 +11,7 @@ This directory contains the Bezier-curve conversion pipeline used to turn binary
 - `bezier_versions/`: versioned Bezierization variants for ablation.
 - `bezierize_ablation/`: evaluation and reporting scripts.
 - `bezierize_animation/`: comparison-video generation scripts.
+- `training/`: Lightning-based DETR-style parametric edge training code.
 - `docs/`: iteration notes and method history.
 - `scripts/`: batch helpers.
 
