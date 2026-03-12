@@ -1,6 +1,6 @@
 data:
-  edge_glob: HED-BSDS/gt_rgb/test/*.png
-  input_root: HED-BSDS/images/test
+  edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
+  input_root: edge_data/HED-BSDS/images/test
   rgb_input: true
   image_size: 224
   batch_size: 2

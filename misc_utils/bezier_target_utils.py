@@ -147,11 +147,12 @@ def build_cache_key(edge_path: Path, version_name: str, target_degree: int, min_
 def load_binary_edge_annotation(edge_path: Path) -> np.ndarray:
     image = Image.open(edge_path).convert('L')
     array = np.asarray(image, dtype=np.uint8)
-    binary = (array > 127).astype(np.uint8)
-    foreground_ratio = float(binary.mean())
-    if foreground_ratio > 0.5:
-        binary = 1 - binary
-    return (binary * 255).astype(np.uint8)
+    high_mask = (array > 127).astype(np.uint8)
+    high_ratio = float(high_mask.mean())
+    # Treat the minority class as the edge foreground so both
+    # black-on-white and white-on-black annotations are handled.
+    edge_mask = high_mask if high_ratio <= 0.5 else (1 - high_mask)
+    return (edge_mask * 255).astype(np.uint8)
 
 
 def extract_cubic_targets(edge_path: Path, version_name: str, target_degree: int, min_curve_length: float) -> Dict:

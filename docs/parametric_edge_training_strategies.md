@@ -6,8 +6,8 @@ This document records the training-time strategies currently used to make the DE
 
 Current default configuration now uses:
 
-- RGB image input from `HED-BSDS/images/test`
-- Parametric targets from `HED-BSDS/gt_rgb/test`
+- RGB image input from `edge_data/HED-BSDS/images/test`
+- Parametric targets from `edge_data/HED-BSDS/gt_rgb/test`
 - `DINOv2` vision transformer backbone
 - FPN-like multi-scale feature pyramid built from DINOv2 intermediate features
 - two-stage proposal generation from encoded memory tokens
@@ -30,8 +30,8 @@ Why:
 
 Current implementation:
 
-- Default training now consumes RGB images from `HED-BSDS/images/test`.
-- Edge supervision still comes from Bezierized annotations in `HED-BSDS/gt_rgb/test`.
+- Default training now consumes RGB images from `edge_data/HED-BSDS/images/test`.
+- Edge supervision still comes from Bezierized annotations in `edge_data/HED-BSDS/gt_rgb/test`.
 
 Why:
 
