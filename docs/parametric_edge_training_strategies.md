@@ -2,6 +2,10 @@
 
 This document records the training-time strategies currently used to make the DETR-style parametric edge detector trainable, why each strategy was introduced, where it comes from, and what effect it had in practice.
 
+For experiment history, rerun commands, and ablation bookkeeping, see [docs/parametric_edge_ablation_log.md](./parametric_edge_ablation_log.md).
+
+For a visual overview of how main queries, DN queries, and decoder refinement fit together, see [docs/query_flow_diagram.md](./query_flow_diagram.md).
+
 ## Current Default Stack
 
 Current default configuration now uses:

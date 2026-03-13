@@ -4,6 +4,7 @@ import torch
 from scipy.optimize import linear_sum_assignment
 
 from misc_utils.train_utils import sample_bezier_curves_torch
+from models.geometry import curve_boxes_xyxy, pairwise_curve_chamfer_cost, pairwise_generalized_box_iou
 
 
 def _build_cost_matrix(
@@ -11,29 +12,31 @@ def _build_cost_matrix(
     curves: torch.Tensor,
     tgt_curves: torch.Tensor,
     tgt_boxes: torch.Tensor,
-    class_cost: float,
     control_cost: float,
     sample_cost: float,
     box_cost: float,
+    giou_cost: float,
+    curve_distance_cost: float,
+    curve_match_point_count: int,
     num_curve_samples: int,
     valid_query_count: int = -1,
 ) -> torch.Tensor:
     num_queries = logits.shape[0]
-    prob_curve = logits.softmax(-1)[..., 0]
-    num_ctrl = curves.shape[1]
     sampled_pred = sample_bezier_curves_torch(curves, num_samples=num_curve_samples)
-    cls_cost = -prob_curve[:, None].repeat(1, tgt_curves.shape[0])
     ctrl_cost = torch.cdist(curves.reshape(num_queries, -1), tgt_curves.reshape(tgt_curves.shape[0], -1), p=1)
     sampled_tgt = sample_bezier_curves_torch(tgt_curves, num_samples=num_curve_samples)
     sample_cost_matrix = torch.cdist(sampled_pred.reshape(num_queries, -1), sampled_tgt.reshape(tgt_curves.shape[0], -1), p=1)
-    pred_boxes = torch.stack([
-        curves[:, :, 0].min(dim=1).values,
-        curves[:, :, 1].min(dim=1).values,
-        curves[:, :, 0].max(dim=1).values,
-        curves[:, :, 1].max(dim=1).values,
-    ], dim=1)
+    pred_boxes = curve_boxes_xyxy(curves)
     bbox_cost = torch.cdist(pred_boxes, tgt_boxes, p=1)
-    total = class_cost * cls_cost + control_cost * ctrl_cost + sample_cost * sample_cost_matrix + box_cost * bbox_cost
+    giou_cost_matrix = 1.0 - pairwise_generalized_box_iou(pred_boxes, tgt_boxes)
+    curve_distance_cost_matrix = pairwise_curve_chamfer_cost(curves, tgt_curves, point_count=curve_match_point_count)
+    total = (
+        control_cost * ctrl_cost
+        + sample_cost * sample_cost_matrix
+        + box_cost * bbox_cost
+        + giou_cost * giou_cost_matrix
+        + curve_distance_cost * curve_distance_cost_matrix
+    )
     if valid_query_count > 0 and valid_query_count < num_queries:
         total[valid_query_count:] = total[valid_query_count:] + 1e6
     return total
@@ -44,10 +47,12 @@ def hungarian_curve_matching(
     logits: torch.Tensor,
     curves: torch.Tensor,
     targets: List[dict],
-    class_cost: float = 1.0,
     control_cost: float = 5.0,
     sample_cost: float = 2.0,
     box_cost: float = 1.0,
+    giou_cost: float = 1.0,
+    curve_distance_cost: float = 0.0,
+    curve_match_point_count: int = 4,
     num_curve_samples: int = 16,
     active_counts: torch.Tensor = None,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
@@ -64,10 +69,12 @@ def hungarian_curve_matching(
             curves=curves[batch_idx],
             tgt_curves=tgt_curves,
             tgt_boxes=tgt_boxes,
-            class_cost=class_cost,
             control_cost=control_cost,
             sample_cost=sample_cost,
             box_cost=box_cost,
+            giou_cost=giou_cost,
+            curve_distance_cost=curve_distance_cost,
+            curve_match_point_count=curve_match_point_count,
             num_curve_samples=num_curve_samples,
             valid_query_count=int(active_counts[batch_idx].item()) if active_counts is not None else -1,
         )
@@ -82,10 +89,12 @@ def repeated_hungarian_curve_matching(
     curves: torch.Tensor,
     targets: List[dict],
     repeat_factor: int,
-    class_cost: float = 1.0,
     control_cost: float = 5.0,
     sample_cost: float = 2.0,
     box_cost: float = 1.0,
+    giou_cost: float = 1.0,
+    curve_distance_cost: float = 0.0,
+    curve_match_point_count: int = 4,
     num_curve_samples: int = 16,
     active_counts: torch.Tensor = None,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
@@ -94,10 +103,12 @@ def repeated_hungarian_curve_matching(
             logits=logits,
             curves=curves,
             targets=targets,
-            class_cost=class_cost,
             control_cost=control_cost,
             sample_cost=sample_cost,
             box_cost=box_cost,
+            giou_cost=giou_cost,
+            curve_distance_cost=curve_distance_cost,
+            curve_match_point_count=curve_match_point_count,
             num_curve_samples=num_curve_samples,
             active_counts=active_counts,
         )
@@ -113,10 +124,12 @@ def repeated_hungarian_curve_matching(
             curves=curves[batch_idx],
             tgt_curves=tgt_curves,
             tgt_boxes=tgt_boxes,
-            class_cost=class_cost,
             control_cost=control_cost,
             sample_cost=sample_cost,
             box_cost=box_cost,
+            giou_cost=giou_cost,
+            curve_distance_cost=curve_distance_cost,
+            curve_match_point_count=curve_match_point_count,
             num_curve_samples=num_curve_samples,
             valid_query_count=int(active_counts[batch_idx].item()) if active_counts is not None else -1,
         )
@@ -140,6 +153,9 @@ def topk_curve_positive_indices(
     control_cost: float = 5.0,
     sample_cost: float = 2.0,
     box_cost: float = 1.0,
+    giou_cost: float = 1.0,
+    curve_distance_cost: float = 0.0,
+    curve_match_point_count: int = 4,
     num_curve_samples: int = 16,
     active_counts: torch.Tensor = None,
 ) -> List[torch.Tensor]:
@@ -155,10 +171,12 @@ def topk_curve_positive_indices(
             curves=curves[batch_idx],
             tgt_curves=tgt_curves,
             tgt_boxes=tgt_boxes,
-            class_cost=0.0,
             control_cost=control_cost,
             sample_cost=sample_cost,
             box_cost=box_cost,
+            giou_cost=giou_cost,
+            curve_distance_cost=curve_distance_cost,
+            curve_match_point_count=curve_match_point_count,
             num_curve_samples=num_curve_samples,
             valid_query_count=int(active_counts[batch_idx].item()) if active_counts is not None else -1,
         )

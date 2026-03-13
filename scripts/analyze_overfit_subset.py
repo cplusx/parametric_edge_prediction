@@ -59,10 +59,12 @@ def main():
                 outputs['pred_logits'],
                 outputs['pred_curves'],
                 targets,
-                class_cost=float(cfg['loss'].get('class_cost', 1.0)),
                 control_cost=float(cfg['loss'].get('control_cost', 5.0)),
-                sample_cost=float(cfg['loss'].get('sample_cost', 2.0)),
+                sample_cost=0.0,
                 box_cost=float(cfg['loss'].get('box_cost', 1.0)),
+                giou_cost=float(cfg['loss'].get('giou_cost', 1.0)),
+                curve_distance_cost=float(cfg['loss'].get('curve_distance_cost', 1.0)),
+                curve_match_point_count=int(cfg['loss'].get('curve_match_point_count', 4)),
                 num_curve_samples=int(cfg['loss'].get('num_curve_samples', 16)),
             )
             src_idx, _ = matched_indices[0]
@@ -76,9 +78,10 @@ def main():
                 'num_matched_curves': int(matched_curves[0].shape[0]),
                 'loss': float(losses['loss'].detach()),
                 'loss_ctrl': float(losses['loss_ctrl'].detach()),
-                'loss_sample': float(losses['loss_sample'].detach()),
+                'loss_curve_dist': float(losses['loss_curve_dist'].detach()),
                 'loss_endpoint': float(losses['loss_endpoint'].detach()),
                 'loss_bbox': float(losses['loss_bbox'].detach()),
+                'loss_giou': float(losses['loss_giou'].detach()),
                 'loss_topk_pos': float(losses.get('loss_topk_pos', torch.tensor(0.0)).detach()),
             })
 
@@ -95,8 +98,8 @@ def main():
         'large_count': len(large),
         'avg_loss_small': avg(small, 'loss'),
         'avg_loss_large': avg(large, 'loss'),
-        'avg_sample_loss_small': avg(small, 'loss_sample'),
-        'avg_sample_loss_large': avg(large, 'loss_sample'),
+        'avg_curve_dist_loss_small': avg(small, 'loss_curve_dist'),
+        'avg_curve_dist_loss_large': avg(large, 'loss_curve_dist'),
         'avg_endpoint_loss_small': avg(small, 'loss_endpoint'),
         'avg_endpoint_loss_large': avg(large, 'loss_endpoint'),
         'rows': rows,

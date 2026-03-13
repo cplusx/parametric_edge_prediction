@@ -1,10 +1,12 @@
 import argparse
 from pathlib import Path
+from typing import List
 
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import WandbLogger
 
 from callbacks.training_visualizer import ParametricEdgeVisualizer
 from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
@@ -41,6 +43,33 @@ def load_pretrained_with_query_expansion(model: ParametricEdgeLightningModule, c
     model.load_state_dict(updated, strict=False)
 
 
+def build_loggers(config, root_dir: Path) -> List:
+    logging_cfg = config.get('logging', {})
+    loggers: List = []
+
+    if bool(logging_cfg.get('csv', True)):
+        loggers.append(CSVLogger(save_dir=str(root_dir), name='csv_logs'))
+
+    wandb_cfg = logging_cfg.get('wandb', {})
+    if bool(wandb_cfg.get('enabled', False)):
+        save_dir = Path(wandb_cfg.get('save_dir', root_dir / 'wandb'))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        loggers.append(WandbLogger(
+            project=wandb_cfg.get('project', 'parametric-edge-prediction'),
+            name=wandb_cfg.get('name'),
+            save_dir=str(save_dir),
+            offline=bool(wandb_cfg.get('offline', False)),
+            log_model=bool(wandb_cfg.get('log_model', False)),
+            tags=wandb_cfg.get('tags'),
+            group=wandb_cfg.get('group'),
+            job_type=wandb_cfg.get('job_type'),
+            notes=wandb_cfg.get('notes'),
+            config=config,
+        ))
+
+    return loggers
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
@@ -55,7 +84,7 @@ def main() -> None:
     model = ParametricEdgeLightningModule(config)
     if config['model'].get('pretrained_checkpoint'):
         load_pretrained_with_query_expansion(model, config['model']['pretrained_checkpoint'])
-    logger = CSVLogger(save_dir=str(root_dir), name='csv_logs')
+    loggers = build_loggers(config, root_dir)
     checkpoint = ModelCheckpoint(
         dirpath=root_dir / 'checkpoints',
         save_top_k=1,
@@ -80,7 +109,7 @@ def main() -> None:
         overfit_batches=config['trainer'].get('overfit_batches', 0.0),
         gradient_clip_val=float(config['trainer'].get('gradient_clip_val', 0.1)),
         callbacks=[checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer],
-        logger=logger,
+        logger=loggers if loggers else False,
         deterministic=bool(config['trainer'].get('deterministic', True)),
     )
     trainer.fit(model, datamodule=datamodule)

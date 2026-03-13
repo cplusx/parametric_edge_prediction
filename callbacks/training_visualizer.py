@@ -15,7 +15,28 @@ class ParametricEdgeVisualizer(pl.Callback):
         self.max_score_curves = max_score_curves
         self.score_threshold = score_threshold
 
+    @staticmethod
+    def _wandb_log_image(trainer, key: str, image_path: Path, caption: str) -> None:
+        image_path = Path(image_path)
+        if not image_path.exists():
+            return
+        loggers = getattr(trainer, 'loggers', None)
+        if loggers is None:
+            single_logger = getattr(trainer, 'logger', None)
+            loggers = [] if single_logger is None else [single_logger]
+        for logger in loggers:
+            if logger is None or logger.__class__.__name__ != 'WandbLogger':
+                continue
+            import wandb
+
+            logger.experiment.log({
+                key: wandb.Image(str(image_path), caption=caption),
+                'trainer/current_epoch': trainer.current_epoch,
+            })
+
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        if trainer.sanity_checking:
+            return
         if batch_idx != 0:
             return
         if trainer.current_epoch % self.every_n_epochs != 0:
@@ -30,10 +51,12 @@ class ParametricEdgeVisualizer(pl.Callback):
             predictions['pred_logits'],
             predictions['pred_curves'],
             batch['targets'],
-            class_cost=float(pl_module.config['loss'].get('class_cost', 1.0)),
             control_cost=float(pl_module.config['loss'].get('control_cost', 5.0)),
-            sample_cost=float(pl_module.config['loss'].get('sample_cost', 2.0)),
+            sample_cost=0.0,
             box_cost=float(pl_module.config['loss'].get('box_cost', 1.0)),
+            giou_cost=float(pl_module.config['loss'].get('giou_cost', 1.0)),
+            curve_distance_cost=float(pl_module.config['loss'].get('curve_distance_cost', 1.0)),
+            curve_match_point_count=int(pl_module.config['loss'].get('curve_match_point_count', 4)),
             num_curve_samples=int(pl_module.config['loss'].get('num_curve_samples', 16)),
             active_counts=predictions.get('pred_active_counts'),
         )
@@ -41,5 +64,9 @@ class ParametricEdgeVisualizer(pl.Callback):
         for batch_id, (src_idx, _) in enumerate(matched_indices):
             matched_curves.append(predictions['pred_curves'][batch_id, src_idx])
         vis_dir = Path(trainer.default_root_dir) / 'visualizations'
-        render_curve_grid(batch['images'], batch['targets'], scored_curves, vis_dir / f'epoch_{trainer.current_epoch:03d}_scores.png')
-        render_curve_grid(batch['images'], batch['targets'], matched_curves, vis_dir / f'epoch_{trainer.current_epoch:03d}_matched.png')
+        score_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_scores.png'
+        matched_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_matched.png'
+        render_curve_grid(batch['images'], batch['targets'], scored_curves, score_path)
+        render_curve_grid(batch['images'], batch['targets'], matched_curves, matched_path)
+        self._wandb_log_image(trainer, 'visualizations/scored_curves', score_path, f'epoch={trainer.current_epoch}')
+        self._wandb_log_image(trainer, 'visualizations/matched_curves', matched_path, f'epoch={trainer.current_epoch}')

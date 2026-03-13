@@ -22,6 +22,8 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         outputs = self(batch['images'], targets=batch['targets'])
         losses = compute_losses(outputs, batch['targets'], self.config)
         self.log(f'{stage}/loss', losses['loss'], prog_bar=True, batch_size=batch['images'].shape[0])
+        if stage == 'val':
+            self.log('val_loss', losses['loss'], prog_bar=False, batch_size=batch['images'].shape[0])
         for key, value in losses.items():
             if key in {'loss', 'matching'}:
                 continue
