@@ -16,7 +16,7 @@ class ParametricEdgeDataset(Dataset):
         cache_root: Path,
         image_size: int,
         version_name: str,
-        input_root: Optional[Path] = None,
+        input_root: Optional[Sequence[Path]] = None,
         rgb_input: bool = False,
         target_degree: int = 3,
         min_curve_length: float = 3.0,
@@ -29,7 +29,7 @@ class ParametricEdgeDataset(Dataset):
         self.cache_root = Path(cache_root)
         self.image_size = int(image_size)
         self.version_name = version_name
-        self.input_root = Path(input_root) if input_root is not None else None
+        self.input_root = [Path(root) for root in input_root] if input_root is not None else None
         self.rgb_input = bool(rgb_input)
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)

@@ -1,14 +1,18 @@
 data:
-  train_edge_glob: edge_data/HED-BSDS/gt_rgb/train/*.png
-  val_edge_glob: edge_data/HED-BSDS/gt_rgb/val/*.png
+  train_edge_globs:
+    - edge_data/HED-BSDS/gt_rgb/train/*.png
+    - edge_data/HED-BSDS/gt_rgb/val/*.png
+  val_edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
   test_edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
-  train_input_root: edge_data/HED-BSDS/images/train
-  val_input_root: edge_data/HED-BSDS/images/val
+  train_input_roots:
+    - edge_data/HED-BSDS/images/train
+    - edge_data/HED-BSDS/images/val
+  val_input_root: edge_data/HED-BSDS/images/test
   test_input_root: edge_data/HED-BSDS/images/test
   rgb_input: true
   image_size: 256
-  batch_size: 4
-  val_batch_size: 4
+  batch_size: 10
+  val_batch_size: 10
   num_workers: 10
   pin_memory: true
   persistent_workers: true
@@ -97,6 +101,8 @@ loss:
   distinct_weight: 0.1
   distinct_topk: 32
   distinct_spatial_sigma: 0.12
+  group_detr_active_group_policy: max
+  group_detr_min_active_groups: 2
   count_weight: 0.0
 
 optimizer:
@@ -117,9 +123,10 @@ trainer:
   max_epochs: 500
   accelerator: gpu
   devices: 2
-  strategy: ddp_find_unused_parameters_false
+  strategy: ddp_find_unused_parameters_true
   precision: 16-mixed
-  accumulate_grad_batches: 4
+  accumulate_grad_batches: 2
+  channels_last: true
   log_every_n_steps: 10
   gradient_clip_val: 0.1
   deterministic: false
@@ -129,7 +136,7 @@ trainer:
   overfit_batches: 0.0
   num_sanity_val_steps: 2
   check_val_every_n_epoch: 1
-  run_test_after_fit: true
+  run_test_after_fit: false
 
 callbacks:
   visualization_every_n_epochs: 20

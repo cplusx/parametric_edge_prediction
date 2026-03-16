@@ -70,6 +70,23 @@ def build_loggers(config, root_dir: Path) -> List:
     return loggers
 
 
+def resolve_trainer_strategy(config) -> str:
+    trainer_cfg = config.get('trainer', {})
+    strategy = trainer_cfg.get('strategy', 'auto')
+    if strategy != 'ddp_find_unused_parameters_false':
+        return strategy
+
+    loss_cfg = config.get('loss', {})
+    grouped_training = int(loss_cfg.get('group_detr_num_groups', 1)) > 1 and (
+        float(loss_cfg.get('one_to_many_weight', 0.0)) > 0.0
+        or float(loss_cfg.get('topk_positive_weight', 0.0)) > 0.0
+    )
+    if grouped_training:
+        print('Switching trainer strategy to ddp_find_unused_parameters_true for dynamic grouped-query training.')
+        return 'ddp_find_unused_parameters_true'
+    return strategy
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
@@ -78,6 +95,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config, args.override_config)
+    torch.set_float32_matmul_precision('high')
     root_dir = Path(config['trainer']['default_root_dir'])
     root_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,7 +123,7 @@ def main() -> None:
         max_epochs=int(config['trainer']['max_epochs']),
         accelerator=config['trainer'].get('accelerator', 'auto'),
         devices=config['trainer'].get('devices', 1),
-        strategy=config['trainer'].get('strategy', 'auto'),
+        strategy=resolve_trainer_strategy(config),
         precision=config['trainer'].get('precision', '32-true'),
         accumulate_grad_batches=int(config['trainer'].get('accumulate_grad_batches', 1)),
         log_every_n_steps=int(config['trainer'].get('log_every_n_steps', 1)),

@@ -2,7 +2,7 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from PIL import Image
@@ -28,22 +28,27 @@ def image_id_from_stem(stem: str) -> str:
     return stem.split('_ann')[0]
 
 
-def resolve_input_path(edge_path: Path, input_root: Optional[Path] = None) -> Path:
+def resolve_input_path(edge_path: Path, input_root: Optional[Union[Path, Sequence[Path]]] = None) -> Path:
     if input_root is None:
         return edge_path
+    if isinstance(input_root, (str, Path)):
+        input_roots = [Path(input_root)]
+    else:
+        input_roots = [Path(root) for root in input_root]
     stem = edge_path.stem
     image_id = image_id_from_stem(stem)
     candidates = []
-    for suffix in SUPPORTED_INPUT_SUFFIXES:
-        candidates.extend([
-            input_root / f'{stem}{suffix}',
-            input_root / f'{image_id}{suffix}',
-            input_root / edge_path.name.replace(edge_path.suffix, suffix),
-        ])
+    for root in input_roots:
+        for suffix in SUPPORTED_INPUT_SUFFIXES:
+            candidates.extend([
+                root / f'{stem}{suffix}',
+                root / f'{image_id}{suffix}',
+                root / edge_path.name.replace(edge_path.suffix, suffix),
+            ])
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise FileNotFoundError(f'Could not resolve input image for {edge_path} under {input_root}')
+    raise FileNotFoundError(f'Could not resolve input image for {edge_path} under {input_roots}')
 
 
 def bernstein_basis_numpy(degree: int, t_values: np.ndarray) -> np.ndarray:

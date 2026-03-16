@@ -13,9 +13,14 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         super().__init__()
         self.config = config
         self.model = ParametricDETR(config)
+        self.use_channels_last = bool(config.get('trainer', {}).get('channels_last', False))
+        if self.use_channels_last:
+            self.model = self.model.to(memory_format=torch.channels_last)
         self.save_hyperparameters(config)
 
     def forward(self, images: torch.Tensor, targets=None):
+        if self.use_channels_last:
+            images = images.contiguous(memory_format=torch.channels_last)
         return self.model(images, targets=targets)
 
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:

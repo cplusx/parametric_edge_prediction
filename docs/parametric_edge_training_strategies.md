@@ -35,8 +35,8 @@ Why:
 Current implementation:
 
 - Formal training is defined in [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml).
-- BSDS `train` and `val` annotation splits are used for optimization and validation.
-- BSDS `test` is kept separate for final evaluation via `trainer.test(..., ckpt_path='best')` after fitting.
+- BSDS `train` and `val` annotation splits are merged for optimization.
+- BSDS `test` is used as the validation split for model selection.
 - Data roots are split explicitly by split name instead of overloading a single `input_root` / `edge_glob` pair.
   - Code: [edge_datasets/parametric_edge_datamodule.py](../edge_datasets/parametric_edge_datamodule.py)
   - Code: [train.py](../train.py)
@@ -59,7 +59,14 @@ Why:
 Status:
 
 - The formal config and runtime plumbing are in place.
-- Parameter exploration and the first full 500-epoch production run are still pending.
+- The split-aware formal cache benchmark completed successfully after warming 2696 graph-cache entries.
+- Validation plus test dataloader benchmarking covered 1609 samples at about 136.1 samples/sec overall, with p95 per-sample arrival about 46.6 ms.
+- A short 2-GPU DDP smoke test completed successfully after switching grouped-query training to `ddp_find_unused_parameters_true`.
+- Short 2-GPU parameter probes selected `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2` as the best tested formal setting on RTX 3090 x2.
+- That setting gives effective global batch size 40 and outperformed the tested `8 x 2` accumulation setting, while `12 x 2` was slower per sample.
+- Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
+- Grouped one-to-many and top-k auxiliary losses used to drop to zero on random training steps because the active group count was sampled uniformly from `1..group_limit`; the formal config now uses `group_detr_active_group_policy: max` so those grouped losses stay active consistently during training.
+- The extent heads were being logged but structurally gated off in the matched loss for the current parameterization; that gate is removed so extent losses now reflect the predicted normalized extent whenever the model emits extent logits.
 
 ## RGB Training Input
 
@@ -651,20 +658,27 @@ Current implementation:
 Formal defaults currently encoded:
 
 - `devices: 2`
-- `strategy: ddp_find_unused_parameters_false`
+- `strategy: ddp_find_unused_parameters_true`
 - `precision: 16-mixed`
-- `accumulate_grad_batches: 4`
+- `accumulate_grad_batches: 2`
+- `batch_size: 10`
+- `val_batch_size: 10`
+- `channels_last: true`
 - `save_top_k: 1` plus `save_last: true`
 
 Why:
 
 - The formal BSDS run is expected to be long enough that resume support is required.
 - A larger effective batch is easier to reach with gradient accumulation than by only increasing per-device batch size.
+- Dynamic grouped-query training activates only a subset of query groups on some steps, so DDP needs unused-parameter detection enabled for the full all-features setup.
+- The current model is compute-bound enough that data-loader changes have less impact than layout fixes; moving the conv path to `channels_last` is a low-risk throughput optimization.
 
 Status:
 
 - Runtime support is in place.
-- Final batch / LR / scheduler choices still need to be validated by the pending search run.
+- The short formal search run chose `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2` for the first production launch.
+- Hyperparameter search should now use the dedicated 50-epoch override [configs/parametric_edge/formal_bsds_hparam_search_50ep.yaml](../configs/parametric_edge/formal_bsds_hparam_search_50ep.yaml).
+- The current 50-epoch search override lowers LR into the requested range, using `lr: 5e-5` and `backbone_lr: 5e-6` with a 5-epoch warmup.
 
 Measured on 2026-03-14 with `configs/parametric_edge/default.yaml`:
 

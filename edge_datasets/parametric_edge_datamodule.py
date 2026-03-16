@@ -61,18 +61,28 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
         self.val_dataset = None
         self.test_dataset = None
 
-    def _split_input_root(self, split: str) -> Optional[Path]:
+    def _split_input_roots(self, split: str) -> Optional[List[Path]]:
         data_cfg = self.config['data']
-        split_key = f'{split}_input_root'
-        input_root = data_cfg.get(split_key, data_cfg.get('input_root'))
-        return Path(input_root) if input_root else None
+        split_keys = (f'{split}_input_roots', f'{split}_input_root')
+        roots = None
+        for split_key in split_keys:
+            if data_cfg.get(split_key) is not None:
+                roots = data_cfg.get(split_key)
+                break
+        if roots is None:
+            roots = data_cfg.get('input_roots', data_cfg.get('input_root'))
+        if roots is None:
+            return None
+        if isinstance(roots, (str, Path)):
+            return [Path(roots)]
+        return [Path(root) for root in roots]
 
     def _build_dataset(self, edge_paths: Sequence[Path], split: str, train_augment: bool, common: Dict) -> ParametricEdgeDataset:
         return ParametricEdgeDataset(
             edge_paths,
             split=split,
             train_augment=train_augment,
-            input_root=self._split_input_root(split),
+            input_root=self._split_input_roots(split),
             **common,
         )
 

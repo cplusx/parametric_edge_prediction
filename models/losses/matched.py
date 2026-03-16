@@ -74,7 +74,7 @@ class MatchedCurveLoss(BaseLossComponent):
             matched_tgt_curves.append(targets[batch_idx]['curves'][tgt_idx].to(device))
             matched_pred_boxes.append(curve_boxes_xyxy(pred_curves[batch_idx, src_idx]))
             matched_tgt_boxes.append(targets[batch_idx]['boxes'][tgt_idx].to(device))
-            if self.config['model'].get('curve_anchor_mode', 'sigmoid') == 'ref_point_delta' and 'pred_curve_extent' in runtime_outputs:
+            if runtime_outputs.get('pred_curve_extent') is not None:
                 matched_pred_extents.append(runtime_outputs['pred_curve_extent'][batch_idx, src_idx])
                 matched_tgt_norm_lengths.append(targets[batch_idx]['curve_norm_lengths'][tgt_idx].to(device))
             if match_weights is not None:

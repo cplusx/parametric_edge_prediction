@@ -1,0 +1,28 @@
+data:
+  batch_size: 10
+  val_batch_size: 10
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/formal_bsds_hparam_search_50ep
+  max_epochs: 50
+  run_test_after_fit: false
+
+optimizer:
+  lr: 0.00005
+  backbone_lr: 0.000005
+  warmup_epochs: 5
+  lr_milestones: [35, 45]
+
+logging:
+  wandb:
+    name: formal-bsds-hparam-search-50ep
+    group: formal-bsds-search
+    job_type: search
+    save_dir: outputs/parametric_edge_training/formal_bsds_hparam_search_50ep/wandb
+    tags:
+      - formal
+      - bsds
+      - search
+      - 50ep
+      - trainplusval
+      - valis_test

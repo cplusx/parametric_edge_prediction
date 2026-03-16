@@ -161,6 +161,7 @@ class DeformableDecoderLayer(nn.Module):
 class ParametricDETR(nn.Module):
     def __init__(self, config: Dict) -> None:
         super().__init__()
+        self.config = config
         model_cfg = config['model']
         self.hidden_dim = int(model_cfg['hidden_dim'])
         self.num_queries = int(model_cfg['num_queries'])
@@ -271,7 +272,14 @@ class ParametricDETR(nn.Module):
         group_limit = max(1, min(self.group_detr_num_groups, dynamic_group_limit))
         if group_limit <= 1:
             return 1
-        return int(torch.randint(1, group_limit + 1, (1,), device=self.query_content_embed.weight.device).item())
+        policy = str(self.config['loss'].get('group_detr_active_group_policy', 'max')).lower()
+        if policy == 'random':
+            min_groups = int(self.config['loss'].get('group_detr_min_active_groups', 1))
+            min_groups = max(1, min(min_groups, group_limit))
+            return int(torch.randint(min_groups, group_limit + 1, (1,), device=self.query_content_embed.weight.device).item())
+        if policy == 'min':
+            return max(1, int(self.config['loss'].get('group_detr_min_active_groups', 1)))
+        return group_limit
 
     def _flatten_multi_scale(self, feats: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         tokens = []
