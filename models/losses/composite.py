@@ -11,7 +11,7 @@ class ParametricEdgeLossComputer:
         self.matched_curve_loss = MatchedCurveLoss(config)
         self.positive_object_loss = PositiveObjectLoss(config)
         self.one_to_many_loss = OneToManyLoss(config, self.matched_curve_loss, self.positive_object_loss)
-        self.topk_positive_loss = TopKPositiveLoss(config)
+        self.topk_positive_loss = TopKPositiveLoss(config, self.matched_curve_loss)
         self.count_loss = CountLoss(config)
         self.distinct_query_loss = DistinctQueryLoss(config)
         self.denoising_loss = DenoisingLoss(config)
@@ -59,15 +59,16 @@ class ParametricEdgeLossComputer:
         for key, value in one_to_many.items():
             log_values[key] = value.detach()
 
-        loss_topk_pos = self.topk_positive_loss(outputs, targets)
-        total = total + float(loss_cfg.get('topk_positive_weight', 0.0)) * loss_topk_pos
-        log_values['loss_topk_pos'] = loss_topk_pos.detach()
+        topk = self.topk_positive_loss(outputs, targets)
+        total = total + float(loss_cfg.get('topk_positive_weight', 0.0)) * topk['loss_topk_pos']
+        for key, value in topk.items():
+            log_values[key] = value.detach()
 
         loss_count = self.count_loss(outputs, targets)
         total = total + float(loss_cfg.get('count_weight', 0.0)) * loss_count
         log_values['loss_count'] = loss_count.detach()
 
-        loss_distinct = self.distinct_query_loss(outputs)
+        loss_distinct = self.distinct_query_loss(outputs, targets)
         total = total + float(loss_cfg.get('distinct_weight', 0.0)) * loss_distinct
         log_values['loss_distinct'] = loss_distinct.detach()
 
@@ -75,6 +76,7 @@ class ParametricEdgeLossComputer:
         total = total + dn['loss_dn']
         log_values['loss_dn_ce'] = dn['loss_dn_ce'].detach()
         log_values['loss_dn_curve'] = dn['loss_dn_curve'].detach()
+        log_values['loss_main'] = base['loss_total'].detach()
         return {'loss': total, 'matching': indices, **log_values}
 
 

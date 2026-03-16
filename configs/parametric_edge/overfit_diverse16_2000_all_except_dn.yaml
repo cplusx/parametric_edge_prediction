@@ -6,6 +6,8 @@ loss:
   dn_weight: 0.0
   dn_curve_weight: 0.0
   one_to_many_weight: 0.3
+  topk_positive_enabled: true
+  topk_positive_layer_k: [2, 2, 2, 2, 2]
   topk_positive_weight: 0.2
   distinct_weight: 0.1
 

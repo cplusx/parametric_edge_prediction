@@ -140,9 +140,16 @@ class DeformableDecoderLayer(nn.Module):
         self.norm3 = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, tgt: torch.Tensor, query_pos: torch.Tensor, reference_points: torch.Tensor, multi_scale_feats: Sequence[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        tgt: torch.Tensor,
+        query_pos: torch.Tensor,
+        reference_points: torch.Tensor,
+        multi_scale_feats: Sequence[torch.Tensor],
+        self_attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         q = tgt + query_pos
-        attn = self.self_attn(q, q, tgt, need_weights=False)[0]
+        attn = self.self_attn(q, q, tgt, attn_mask=self_attn_mask, need_weights=False)[0]
         tgt = self.norm1(tgt + self.dropout(attn))
         cross = self.cross_attn(tgt + query_pos, reference_points, multi_scale_feats)
         tgt = self.norm2(tgt + self.dropout(cross))
@@ -178,6 +185,14 @@ class ParametricDETR(nn.Module):
         self.curve_extent_min = float(model_cfg.get('curve_extent_min', 0.2))
         self.curve_extent_max = float(model_cfg.get('curve_extent_max', 1.8))
         self.interior_delta_ratio = float(model_cfg.get('interior_delta_ratio', 0.35))
+        self.group_addback_enabled = (
+            float(config['loss'].get('one_to_many_weight', 0.0)) > 0.0
+            or float(config['loss'].get('topk_positive_weight', 0.0)) > 0.0
+        )
+        self.group_detr_num_groups = max(
+            1,
+            int(config['loss'].get('group_detr_num_groups', 1)) if self.group_addback_enabled else 1,
+        )
 
         self.backbone = DINOv2PyramidBackbone(config)
         self.encoder = nn.TransformerEncoder(
@@ -205,21 +220,22 @@ class ParametricDETR(nn.Module):
         ])
         self.decoder_norm = nn.LayerNorm(self.hidden_dim)
 
-        self.reference_embed = MLP(2, self.hidden_dim, self.hidden_dim, num_layers=2)
-        self.query_content_embed = nn.Embedding(self.num_queries, self.hidden_dim)
-        self.learned_query_ref_points = nn.Embedding(self.num_queries, 2)
+        self.curve_anchor_embed = MLP(self.curve_dim, self.hidden_dim, self.hidden_dim, num_layers=2)
+        self.query_content_embed = nn.Embedding(self.num_queries * self.group_detr_num_groups, self.hidden_dim)
+        self.learned_query_curve_anchors = nn.Embedding(self.num_queries * self.group_detr_num_groups, self.curve_dim)
         self.query_fuse = nn.Linear(self.hidden_dim * 2, self.hidden_dim)
         self.proposal_score_head = nn.Linear(self.hidden_dim, 1)
         self.proposal_ref_head = MLP(self.hidden_dim, self.hidden_dim, 2, num_layers=3)
+        self.proposal_curve_head = MLP(self.hidden_dim, self.hidden_dim, self.curve_dim, num_layers=3)
         self.proposal_memory_proj = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.curve_to_ref_head = MLP(self.curve_dim, self.hidden_dim, 2, num_layers=3)
 
-        self.dn_query_encoder = MLP(self.curve_dim, self.hidden_dim, self.hidden_dim, num_layers=3)
-        self.dn_label_embed = nn.Embedding(2, self.hidden_dim)
+        self.dn_content_embed = nn.Embedding(1, self.hidden_dim)
 
         self.class_head = nn.Linear(self.hidden_dim, 2)
         self.curve_head = MLP(self.hidden_dim, self.hidden_dim, self.curve_dim, num_layers=3)
         self.curve_extent_head = nn.Linear(self.hidden_dim, 1)
-        self.ref_point_heads = nn.ModuleList([MLP(self.hidden_dim, self.hidden_dim, 2, num_layers=3) for _ in range(self.num_decoder_layers)])
+        self.curve_anchor_heads = nn.ModuleList([MLP(self.hidden_dim, self.hidden_dim, self.curve_dim, num_layers=3) for _ in range(self.num_decoder_layers)])
 
         nn.init.constant_(self.class_head.bias[0], self.object_bias)
         nn.init.constant_(self.class_head.bias[1], self.no_object_bias)
@@ -229,10 +245,33 @@ class ParametricDETR(nn.Module):
             xs = torch.linspace(0.05, 0.95, side)
             grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
             refs = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)[: self.num_queries].clamp(1e-4, 1.0 - 1e-4)
-            self.learned_query_ref_points.weight.copy_(inverse_sigmoid(refs))
+            init_curve = refs.unsqueeze(1).expand(-1, self.num_control_points, -1).reshape(self.num_queries, self.curve_dim)
+            repeated_init_curve = init_curve.repeat(self.group_detr_num_groups, 1)
+            self.learned_query_curve_anchors.weight.copy_(inverse_sigmoid(repeated_init_curve))
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
+
+    def _active_group_count(self, targets: Optional[List[dict]]) -> int:
+        if not self.training or self.group_detr_num_groups <= 1 or targets is None:
+            return 1
+        target_counts = []
+        for target in targets:
+            if 'num_targets' in target:
+                target_counts.append(int(target['num_targets']))
+            elif 'curves' in target:
+                target_counts.append(int(target['curves'].shape[0]))
+        if not target_counts:
+            return 1
+        max_target_count = max(target_counts)
+        if max_target_count <= 0:
+            return 1
+        # Fewer edges allow more supervised groups; dense edge maps fall back toward one group.
+        dynamic_group_limit = max(1, self.num_queries // max_target_count)
+        group_limit = max(1, min(self.group_detr_num_groups, dynamic_group_limit))
+        if group_limit <= 1:
+            return 1
+        return int(torch.randint(1, group_limit + 1, (1,), device=self.query_content_embed.weight.device).item())
 
     def _flatten_multi_scale(self, feats: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         tokens = []
@@ -262,67 +301,129 @@ class ParametricDETR(nn.Module):
             start += length
         return outputs
 
-    def _build_main_queries(self, memory: torch.Tensor, memory_coords: torch.Tensor, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _curve_anchor_to_attn_ref(self, curve_anchor: torch.Tensor) -> torch.Tensor:
+        mins = curve_anchor.amin(dim=2)
+        maxs = curve_anchor.amax(dim=2)
+        center = ((mins + maxs) * 0.5).clamp(1e-4, 1.0 - 1e-4)
+        ref_delta = self.curve_to_ref_head(curve_anchor.reshape(curve_anchor.shape[0], curve_anchor.shape[1], self.curve_dim))
+        return torch.sigmoid(inverse_sigmoid(center) + ref_delta)
+
+    def _build_main_queries(
+        self,
+        memory: torch.Tensor,
+        memory_coords: torch.Tensor,
+        batch_size: int,
+        targets: Optional[List[dict]],
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
         proposal_logits = self.proposal_score_head(memory).squeeze(-1)
         proposal_ref = torch.sigmoid(inverse_sigmoid(memory_coords.unsqueeze(0).expand(batch_size, -1, -1)) + self.proposal_ref_head(memory))
+        proposal_curve_base = proposal_ref.unsqueeze(2).expand(-1, -1, self.num_control_points, -1).reshape(batch_size, -1, self.curve_dim)
+        proposal_curve = torch.sigmoid(inverse_sigmoid(proposal_curve_base) + self.proposal_curve_head(memory))
         topk = min(self.num_queries, proposal_logits.shape[1])
         topk_idx = proposal_logits.topk(topk, dim=1).indices
         gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
         query_memory = torch.gather(memory, 1, gather_idx)
-        query_ref = torch.gather(proposal_ref, 1, topk_idx.unsqueeze(-1).expand(-1, -1, 2))
-        learned = self.query_content_embed.weight[:topk].unsqueeze(0).expand(batch_size, -1, -1)
-        query_content = self.query_fuse(torch.cat([self.proposal_memory_proj(query_memory), learned], dim=-1))
-        if topk < self.num_queries:
-            remain = self.num_queries - topk
-            extra_content = self.query_content_embed.weight[topk: topk + remain].unsqueeze(0).expand(batch_size, -1, -1)
-            extra_ref = self.learned_query_ref_points.weight[:remain].sigmoid().unsqueeze(0).expand(batch_size, -1, -1)
-            query_content = torch.cat([query_content, extra_content], dim=1)
-            query_ref = torch.cat([query_ref, extra_ref], dim=1)
-        return query_content, query_ref
+        proposal_query_anchor = torch.gather(proposal_curve, 1, topk_idx.unsqueeze(-1).expand(-1, -1, self.curve_dim))
+        proposal_query_anchor = proposal_query_anchor.reshape(batch_size, topk, self.num_control_points, 2)
+
+        group_count = self._active_group_count(targets)
+        group_contents = []
+        group_anchors = []
+        for group_idx in range(group_count):
+            start = group_idx * self.num_queries
+            learned = self.query_content_embed.weight[start:start + topk].unsqueeze(0).expand(batch_size, -1, -1)
+            query_content = self.query_fuse(torch.cat([self.proposal_memory_proj(query_memory), learned], dim=-1))
+            query_anchor = proposal_query_anchor
+            if topk < self.num_queries:
+                remain = self.num_queries - topk
+                extra_content = self.query_content_embed.weight[start + topk:start + self.num_queries].unsqueeze(0).expand(batch_size, -1, -1)
+                extra_anchor = self.learned_query_curve_anchors.weight[start + topk:start + self.num_queries].sigmoid().unsqueeze(0).expand(batch_size, -1, -1)
+                extra_anchor = extra_anchor.reshape(batch_size, remain, self.num_control_points, 2)
+                query_content = torch.cat([query_content, extra_content], dim=1)
+                query_anchor = torch.cat([query_anchor, extra_anchor], dim=1)
+            group_contents.append(query_content)
+            group_anchors.append(query_anchor)
+        return torch.cat(group_contents, dim=1), torch.cat(group_anchors, dim=1), group_count
+
+    def _build_group_self_attn_mask(self, dn_count: int, group_count: int, device: torch.device) -> Optional[torch.Tensor]:
+        if group_count <= 1:
+            return None
+        total_queries = dn_count + group_count * self.num_queries
+        mask = torch.zeros((total_queries, total_queries), dtype=torch.bool, device=device)
+        base = dn_count
+        for source_group in range(group_count):
+            src_start = base + source_group * self.num_queries
+            src_end = src_start + self.num_queries
+            for target_group in range(group_count):
+                if source_group == target_group:
+                    continue
+                tgt_start = base + target_group * self.num_queries
+                tgt_end = tgt_start + self.num_queries
+                mask[src_start:src_end, tgt_start:tgt_end] = True
+        return mask
 
     def _build_dn_queries(self, targets: Optional[List[dict]], device: torch.device) -> Tuple[Optional[torch.Tensor], Optional[Dict], Optional[torch.Tensor]]:
         if not self.training or targets is None or self.num_dn_groups <= 0:
             return None, None, None
-        dn_curves, dn_mask, dn_labels = build_dn_queries(targets, self.num_dn_groups, self.dn_noise_scale, device)
+        dn_curves, dn_targets, dn_mask, dn_labels = build_dn_queries(targets, self.num_dn_groups, self.dn_noise_scale, device)
         if dn_curves.shape[1] == 0:
             return None, None, None
-        dn_embed = self.dn_query_encoder(dn_curves) + self.dn_label_embed(dn_labels)
         dn_curve_points = dn_curves.reshape(dn_curves.shape[0], dn_curves.shape[1], self.num_control_points, 2)
-        dn_ref = dn_curve_points.mean(dim=2)
-        dn_meta = {'mask': dn_mask, 'labels': dn_labels, 'curves': dn_curve_points, 'count': dn_curves.shape[1]}
-        return dn_embed, dn_meta, dn_ref
+        dn_target_points = dn_targets.reshape(dn_targets.shape[0], dn_targets.shape[1], self.num_control_points, 2)
+        dn_content = self.dn_content_embed.weight[0].view(1, 1, -1).expand(dn_curves.shape[0], dn_curves.shape[1], -1)
+        dn_meta = {
+            'mask': dn_mask,
+            'labels': dn_labels,
+            'curves': dn_target_points,
+            'noisy_curves': dn_curve_points,
+            'count': dn_curves.shape[1],
+        }
+        return dn_content, dn_meta, dn_curve_points
 
-    def _decode_to_output(self, hidden: torch.Tensor, ref_points: torch.Tensor, dn_count: int = 0) -> Dict[str, torch.Tensor]:
+    def _decode_to_output(
+        self,
+        hidden: torch.Tensor,
+        curve_anchor: torch.Tensor,
+        ref_points: torch.Tensor,
+        dn_count: int = 0,
+        query_group_count: int = 1,
+    ) -> Dict[str, torch.Tensor]:
         logits = self.class_head(hidden)
-        curve_raw = self.curve_head(hidden).reshape(hidden.shape[0], hidden.shape[1], self.num_control_points, 2)
+        curve_raw = self.curve_head(hidden)
         extent_logits = self.curve_extent_head(hidden).squeeze(-1)
         extent_scale = self.curve_extent_min + (self.curve_extent_max - self.curve_extent_min) * torch.sigmoid(extent_logits)
+        anchor_logits = inverse_sigmoid(curve_anchor.reshape(hidden.shape[0], hidden.shape[1], self.curve_dim))
+        curves = torch.sigmoid(anchor_logits + curve_raw).reshape(hidden.shape[0], hidden.shape[1], self.num_control_points, 2)
 
-        global_scale = (self.curve_delta_scale * extent_scale).unsqueeze(-1).unsqueeze(-1)
-        endpoint_delta = global_scale * torch.tanh(curve_raw[:, :, [0, -1], :])
-        endpoints = (ref_points.unsqueeze(2) + endpoint_delta).clamp(0.0, 1.0)
-        if self.num_control_points > 2:
-            num_inner = self.num_control_points - 2
-            t_vals = torch.linspace(
-                1.0 / float(num_inner + 1),
-                float(num_inner) / float(num_inner + 1),
-                num_inner,
-                device=hidden.device,
-                dtype=hidden.dtype,
-            ).view(1, 1, num_inner, 1)
-            line_interp = endpoints[:, :, [0], :] * (1.0 - t_vals) + endpoints[:, :, [1], :] * t_vals
-            inner_scale = global_scale * self.interior_delta_ratio
-            interior = (line_interp + inner_scale * torch.tanh(curve_raw[:, :, 1:-1, :])).clamp(0.0, 1.0)
-            curves = torch.cat([endpoints[:, :, [0], :], interior, endpoints[:, :, [1], :]], dim=2)
-        else:
-            curves = endpoints
+        main_logits = logits[:, dn_count:]
+        main_curves = curves[:, dn_count:]
+        main_extent = extent_scale[:, dn_count:]
+        main_hidden = hidden[:, dn_count:]
+        main_refs = ref_points[:, dn_count:]
+        main_anchors = curve_anchor[:, dn_count:]
+
+        grouped_logits = main_logits.reshape(main_logits.shape[0], query_group_count, self.num_queries, -1)
+        grouped_curves = main_curves.reshape(main_curves.shape[0], query_group_count, self.num_queries, self.num_control_points, 2)
+        grouped_extent = main_extent.reshape(main_extent.shape[0], query_group_count, self.num_queries)
+        grouped_hidden = main_hidden.reshape(main_hidden.shape[0], query_group_count, self.num_queries, -1)
+        grouped_refs = main_refs.reshape(main_refs.shape[0], query_group_count, self.num_queries, 2)
+        grouped_anchors = main_anchors.reshape(main_anchors.shape[0], query_group_count, self.num_queries, self.num_control_points, 2)
 
         output = {
-            'pred_logits': logits[:, dn_count:],
-            'pred_curves': curves[:, dn_count:],
-            'pred_curve_extent': extent_scale[:, dn_count:],
-            'pred_query_hidden': hidden[:, dn_count:],
-            'pred_ref_points': ref_points[:, dn_count:],
+            'pred_logits': grouped_logits[:, 0],
+            'pred_curves': grouped_curves[:, 0],
+            'pred_curve_extent': grouped_extent[:, 0],
+            'pred_query_hidden': grouped_hidden[:, 0],
+            'pred_ref_points': grouped_refs[:, 0],
+            'pred_curve_anchors': grouped_anchors[:, 0],
+            'group_pred_logits': grouped_logits,
+            'group_pred_curves': grouped_curves,
+            'group_pred_curve_extent': grouped_extent,
+            'group_pred_query_hidden': grouped_hidden,
+            'group_pred_ref_points': grouped_refs,
+            'group_pred_curve_anchors': grouped_anchors,
+            'pred_group_count': query_group_count,
+            'pred_queries_per_group': self.num_queries,
             'pred_active_counts': None,
             'pred_count_ratio': None,
         }
@@ -330,6 +431,7 @@ class ParametricDETR(nn.Module):
             output['dn_pred_logits'] = logits[:, :dn_count]
             output['dn_pred_curves'] = curves[:, :dn_count]
             output['dn_pred_curve_extent'] = extent_scale[:, :dn_count]
+            output['dn_pred_curve_anchors'] = curve_anchor[:, :dn_count]
         return output
 
     def forward(self, images: torch.Tensor, targets: Optional[List[dict]] = None) -> Dict[str, torch.Tensor]:
@@ -338,31 +440,39 @@ class ParametricDETR(nn.Module):
         memory_tokens = self.encoder(memory_tokens)
         encoded_feats = self._split_memory_to_levels(memory_tokens, feat_maps)
 
-        main_queries, main_refs = self._build_main_queries(memory_tokens, memory_coords, images.shape[0])
-        dn_queries, dn_meta, dn_refs = self._build_dn_queries(targets, images.device)
+        main_queries, main_curve_anchors, query_group_count = self._build_main_queries(memory_tokens, memory_coords, images.shape[0], targets)
+        dn_queries, dn_meta, dn_curve_anchors = self._build_dn_queries(targets, images.device)
         if dn_queries is not None:
             queries = torch.cat([dn_queries, main_queries], dim=1)
-            ref_points = torch.cat([dn_refs, main_refs], dim=1)
+            curve_anchors = torch.cat([dn_curve_anchors, main_curve_anchors], dim=1)
         else:
             queries = main_queries
-            ref_points = main_refs
+            curve_anchors = main_curve_anchors
+        self_attn_mask = self._build_group_self_attn_mask(0 if dn_meta is None else dn_meta['count'], query_group_count, images.device)
 
         hidden = torch.zeros_like(queries)
         decoder_states = []
+        decoder_anchors = []
         decoder_refs = []
-        current_ref = ref_points
+        current_anchor = curve_anchors
         for layer_idx, layer in enumerate(self.decoder_layers):
-            query_pos = self.reference_embed(current_ref)
-            hidden = layer(hidden + queries, query_pos, current_ref, encoded_feats)
+            current_ref = self._curve_anchor_to_attn_ref(current_anchor)
+            query_pos = self.curve_anchor_embed(current_anchor.reshape(current_anchor.shape[0], current_anchor.shape[1], -1))
+            hidden = layer(hidden + queries, query_pos, current_ref, encoded_feats, self_attn_mask=self_attn_mask)
             hidden = self.decoder_norm(hidden)
             decoder_states.append(hidden)
+            decoder_anchors.append(current_anchor)
             decoder_refs.append(current_ref)
-            ref_delta = self.ref_point_heads[layer_idx](hidden)
-            current_ref = torch.sigmoid(inverse_sigmoid(current_ref) + ref_delta)
+            anchor_delta = self.curve_anchor_heads[layer_idx](hidden)
+            updated_anchor = inverse_sigmoid(current_anchor.reshape(current_anchor.shape[0], current_anchor.shape[1], self.curve_dim)) + anchor_delta
+            current_anchor = torch.sigmoid(updated_anchor).reshape(current_anchor.shape[0], current_anchor.shape[1], self.num_control_points, 2)
 
         dn_count = dn_meta['count'] if dn_meta is not None else 0
-        final = self._decode_to_output(decoder_states[-1], decoder_refs[-1], dn_count=dn_count)
-        final['aux_outputs'] = [self._decode_to_output(state, ref, dn_count=dn_count) for state, ref in zip(decoder_states[:-1], decoder_refs[:-1])]
+        final = self._decode_to_output(decoder_states[-1], decoder_anchors[-1], decoder_refs[-1], dn_count=dn_count, query_group_count=query_group_count)
+        final['aux_outputs'] = [
+            self._decode_to_output(state, anchor, ref, dn_count=dn_count, query_group_count=query_group_count)
+            for state, anchor, ref in zip(decoder_states[:-1], decoder_anchors[:-1], decoder_refs[:-1])
+        ]
         if dn_meta is not None:
             final['dn_meta'] = dn_meta
         return final

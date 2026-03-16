@@ -2,6 +2,7 @@ from typing import Dict
 
 import pytorch_lightning as pl
 import torch
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, MultiStepLR, SequentialLR
 
 from models.losses import compute_losses
 from models.parametric_detr import ParametricDETR
@@ -20,14 +21,19 @@ class ParametricEdgeLightningModule(pl.LightningModule):
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
         outputs = self(batch['images'], targets=batch['targets'])
+        sync_dist = stage != 'train'
+        if 'pred_group_count' in outputs:
+            self.log(f'{stage}/group_count', float(outputs['pred_group_count']), batch_size=batch['images'].shape[0], sync_dist=sync_dist)
         losses = compute_losses(outputs, batch['targets'], self.config)
-        self.log(f'{stage}/loss', losses['loss'], prog_bar=True, batch_size=batch['images'].shape[0])
+        self.log(f'{stage}/loss', losses['loss'], prog_bar=True, batch_size=batch['images'].shape[0], sync_dist=sync_dist)
         if stage == 'val':
-            self.log('val_loss', losses['loss'], prog_bar=False, batch_size=batch['images'].shape[0])
+            self.log('val_loss', losses['loss'], prog_bar=False, batch_size=batch['images'].shape[0], sync_dist=True)
+            if 'loss_main' in losses:
+                self.log('val_loss_main', losses['loss_main'], prog_bar=False, batch_size=batch['images'].shape[0], sync_dist=True)
         for key, value in losses.items():
             if key in {'loss', 'matching'}:
                 continue
-            self.log(f'{stage}/{key}', value, batch_size=batch['images'].shape[0])
+            self.log(f'{stage}/{key}', value, batch_size=batch['images'].shape[0], sync_dist=sync_dist)
         return losses['loss']
 
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
@@ -36,15 +42,75 @@ class ParametricEdgeLightningModule(pl.LightningModule):
     def validation_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, 'val')
 
+    def test_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
+        return self._shared_step(batch, 'test')
+
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(),
-            lr=float(self.config['optimizer']['lr']),
-            weight_decay=float(self.config['optimizer'].get('weight_decay', 1e-4)),
-        )
-        scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=int(self.config['optimizer'].get('lr_step_size', 50)),
-            gamma=float(self.config['optimizer'].get('lr_gamma', 0.5)),
-        )
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+        opt_cfg = self.config['optimizer']
+        base_lr = float(opt_cfg['lr'])
+        backbone_lr = float(opt_cfg.get('backbone_lr', base_lr))
+        weight_decay = float(opt_cfg.get('weight_decay', 1e-4))
+        beta1 = float(opt_cfg.get('beta1', 0.9))
+        beta2 = float(opt_cfg.get('beta2', 0.999))
+
+        backbone_params = []
+        other_params = []
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            if name.startswith('model.backbone.'):
+                backbone_params.append(param)
+            else:
+                other_params.append(param)
+
+        param_groups = []
+        if other_params:
+            param_groups.append({'params': other_params, 'lr': base_lr, 'weight_decay': weight_decay})
+        if backbone_params:
+            param_groups.append({'params': backbone_params, 'lr': backbone_lr, 'weight_decay': weight_decay})
+
+        optimizer = torch.optim.AdamW(param_groups, betas=(beta1, beta2))
+
+        max_epochs = int(self.config['trainer'].get('max_epochs', 1))
+        warmup_epochs = int(opt_cfg.get('warmup_epochs', 0))
+        scheduler_type = str(opt_cfg.get('scheduler', 'multistep')).lower()
+        min_lr_ratio = float(opt_cfg.get('min_lr_ratio', 0.01))
+
+        if scheduler_type == 'cosine':
+            main_scheduler = CosineAnnealingLR(
+                optimizer,
+                T_max=max(1, max_epochs - warmup_epochs),
+                eta_min=base_lr * min_lr_ratio,
+            )
+        else:
+            milestones = opt_cfg.get('lr_milestones')
+            if milestones is None:
+                milestones = [max(1, int(max_epochs * 0.7)), max(1, int(max_epochs * 0.9))]
+            main_scheduler = MultiStepLR(
+                optimizer,
+                milestones=[int(milestone) for milestone in milestones],
+                gamma=float(opt_cfg.get('lr_gamma', 0.1)),
+            )
+
+        if warmup_epochs > 0:
+            warmup_scheduler = LinearLR(
+                optimizer,
+                start_factor=float(opt_cfg.get('warmup_start_factor', 0.1)),
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_scheduler, main_scheduler],
+                milestones=[warmup_epochs],
+            )
+        else:
+            scheduler = main_scheduler
+
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'epoch',
+            },
+        }

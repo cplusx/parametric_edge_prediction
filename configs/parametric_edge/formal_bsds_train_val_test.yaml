@@ -1,29 +1,30 @@
 data:
-  edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
-  input_root: edge_data/HED-BSDS/images/test
+  train_edge_glob: edge_data/HED-BSDS/gt_rgb/train/*.png
+  val_edge_glob: edge_data/HED-BSDS/gt_rgb/val/*.png
+  test_edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
+  train_input_root: edge_data/HED-BSDS/images/train
+  val_input_root: edge_data/HED-BSDS/images/val
+  test_input_root: edge_data/HED-BSDS/images/test
   rgb_input: true
   image_size: 256
-  batch_size: 2
-  val_batch_size: 2
-  num_workers: 4
+  batch_size: 4
+  val_batch_size: 4
+  num_workers: 10
   pin_memory: true
   persistent_workers: true
   cache_dir: edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent
   target_version: v5_anchor_consistent
   target_degree: 5
   min_curve_length: 3.0
-  max_targets: 400
+  max_targets: 512
   train_augment: true
   augment:
-    resize_scale_range: [1.0, 1.4]
-    affine_scale_range: [0.95, 1.05]
-    affine_max_rotate_deg: 8.0
-    affine_max_translate_ratio: 0.05
+    resize_scale_range: [1.0, 1.5]
+    affine_scale_range: [0.9, 1.1]
+    affine_max_rotate_deg: 10.0
+    affine_max_translate_ratio: 0.06
     hflip_prob: 0.5
     vflip_prob: 0.0
-  val_ratio: 0.1
-  test_ratio: 0.0
-  split_seed: 42
   limit_samples: null
   overfit_num_samples: null
   sample_names: null
@@ -31,15 +32,15 @@ data:
 model:
   input_channels: 3
   target_degree: 5
-  hidden_dim: 256
-  num_queries: 400
-  nheads: 8
-  num_encoder_layers: 2
+  hidden_dim: 384
+  num_queries: 512
+  nheads: 12
+  num_encoder_layers: 4
   num_decoder_layers: 6
-  dim_feedforward: 1024
+  dim_feedforward: 1536
   dropout: 0.0
   num_feature_levels: 4
-  num_sampling_points: 4
+  num_sampling_points: 8
   deformable_offset_scale: 2.0
   backbone_name: vit_small_patch14_dinov2
   backbone_pretrained: true
@@ -88,7 +89,7 @@ loss:
   one_to_many_endpoint_weight: 2.0
   one_to_many_bbox_weight: 2.0
   one_to_many_extent_weight: 1.0
-  topk_positive_enabled: false
+  topk_positive_enabled: true
   topk_positive_per_gt: 2
   topk_positive_layer_k: [2, 2, 2, 2, 2]
   topk_positive_weight: 0.2
@@ -100,23 +101,55 @@ loss:
 
 optimizer:
   lr: 0.0001
+  backbone_lr: 0.00001
   weight_decay: 0.0001
-  lr_step_size: 40
-  lr_gamma: 0.5
+  beta1: 0.9
+  beta2: 0.999
+  scheduler: multistep
+  warmup_epochs: 20
+  warmup_start_factor: 0.1
+  lr_milestones: [350, 425]
+  lr_gamma: 0.1
+  min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: outputs/parametric_edge_training/default_dinov2_deformable
-  max_epochs: 20
-  accelerator: auto
-  devices: 1
-  log_every_n_steps: 1
+  default_root_dir: outputs/parametric_edge_training/formal_bsds_train_val_test
+  max_epochs: 500
+  accelerator: gpu
+  devices: 2
+  strategy: ddp_find_unused_parameters_false
+  precision: 16-mixed
+  accumulate_grad_batches: 4
+  log_every_n_steps: 10
   gradient_clip_val: 0.1
-  deterministic: true
+  deterministic: false
+  benchmark: true
   limit_train_batches: 1.0
   limit_val_batches: 1.0
   overfit_batches: 0.0
+  num_sanity_val_steps: 2
+  check_val_every_n_epoch: 1
+  run_test_after_fit: true
 
 callbacks:
-  visualization_every_n_epochs: 2
+  visualization_every_n_epochs: 20
   visualization_score_threshold: 0.3
-  visualization_max_curves: 96
+  visualization_max_curves: 128
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: false
+    project: parametric-edge-prediction
+    name: formal-bsds-train-val-test
+    group: formal-bsds
+    job_type: train
+    tags:
+      - formal
+      - bsds
+      - two-gpu
+      - dinov2
+      - grouped
+      - all-features
+    save_dir: outputs/parametric_edge_training/formal_bsds_train_val_test/wandb

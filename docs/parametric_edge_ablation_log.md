@@ -50,6 +50,48 @@ Training runs themselves write to experiment-specific directories under:
 
 - `outputs/parametric_edge_training/`
 
+Dataset-side cache artifacts are stored separately under:
+
+- `edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent/`
+
+Those cache files are not source-controlled and should not be expected to appear in GitHub commits.
+
+## Formal Training Plan
+
+Purpose:
+
+- Move from overfit diagnostics to a proper BSDS train/val/test training run.
+
+Config:
+
+- [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml)
+
+Current intended command:
+
+```bash
+python train.py \
+  --config configs/parametric_edge/formal_bsds_train_val_test.yaml
+```
+
+Current runtime design:
+
+- Train on BSDS `train`
+- Validate on BSDS `val`
+- Test on BSDS `test` after fit using the best checkpoint
+- Use 2 GPUs with DDP and mixed precision
+- Keep both the best monitored checkpoint and `last.ckpt`
+
+Status:
+
+- Config and runtime support are checked in.
+- Parameter exploration and the first full formal run are still pending and therefore no formal result section is recorded yet.
+
+Important reset on 2026-03-14:
+
+- Older overfit outputs were generated before the current graph-first data pipeline, `loss_main`-based comparison policy, and the eval-padding / XY normalization fixes stabilized.
+- Those stale overfit artifacts should not be used for current conclusions and are cleared from `outputs/parametric_edge_training/` before rerunning the suite.
+- If a section below mentions an older overfit directory that no longer exists, treat it as historical context only and rerun the command instead of relying on the removed artifact.
+
 ## Ablation 1: Memorization Add-Back Suite
 
 Purpose:
@@ -65,6 +107,9 @@ Add-back overrides:
 
 - [configs/parametric_edge/overfit_diverse16_2000_addback_aux.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_aux.yaml)
 - [configs/parametric_edge/overfit_diverse16_2000_addback_dn.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn.yaml)
+- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
+- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
+- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
 - [configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml)
 - [configs/parametric_edge/overfit_diverse16_2000_addback_topk.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_topk.yaml)
 - [configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml)
@@ -85,6 +130,18 @@ python train.py \
 
 python train.py \
   --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
+
+python train.py \
+  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml
+
+python train.py \
+  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml
+
+python train.py \
+  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
   --override-config configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml
 
 python train.py \
@@ -96,12 +153,60 @@ python train.py \
   --override-config configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml
 ```
 
+Rerun note after DN/query refactor on 2026-03-14:
+
+- Purpose:
+  - Re-test the DN add-back setting after replacing the old DN geometry MLP path with direct noisy curve anchors and a derived 2D deformable-attention reference.
+- Config:
+  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
+- Output directory:
+  - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix)
+- Command:
+```bash
+python train.py \
+  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
+```
+- Current conclusion:
+  - This refactor regressed early overfit behavior badly.
+  - The rerun was stopped at epoch 53 after reaching `train/loss=1.2933`, `val/loss=1.1601`.
+  - The historical successful DN run at the same epoch had `val/loss=0.3687`, so the new curve-anchor implementation is substantially worse in its current form and should not replace the previous DN path yet.
+
+Stricter historical DN-only comparison on 2026-03-14:
+
+- Clarification:
+  - The historical completed run [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn/csv_logs/version_1](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn/csv_logs/version_1) is indeed the old `memorization + DN only` run, not a no-DN baseline.
+  - Its saved [hparams.yaml](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn/csv_logs/version_1/hparams.yaml) shows `dn_num_groups: 4`, `dn_weight: 1.0`, `dn_curve_weight: 5.0`, with the other memorization regularizers still disabled.
+- Purpose:
+  - Rerun the new curve-anchor/DN implementation with loss weights adjusted to match the historical completed DN-only run as closely as the current code permits.
+- Config:
+  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
+- Output directory:
+  - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare)
+- Current conclusion:
+  - This stricter apples-to-apples rerun is still much worse than the old completed DN-only run.
+  - It was stopped during epoch 35 after logging `val/loss=1.3089` at epoch 31 and best-so-far `val/loss=1.2890` at epoch 22.
+  - The old completed DN-only run had `val/loss=0.3697` at epoch 31 and best-so-far `0.3584` by epoch 29.
+  - So the regression is not explained just by changed default matcher weights; it persists even under a much closer historical comparison.
+
+Proposal-curve main-query rerun on 2026-03-14:
+
+- Purpose:
+  - Replace the bad “single 2D point copied across all control points” main-query initialization with encoder proposals that directly predict full endpoint/control-point anchors, while deriving the deformable 2D reference from the curve anchor through an MLP.
+- Config:
+  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
+- Output directory:
+  - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare)
+- Current conclusion:
+  - This is better aligned with the intended geometry design than the point-copy version, but it still does not recover the old DN-only memorization behavior.
+  - The run was stopped during epoch 45; by epoch 41 it had `val/loss=1.2140`, with best-so-far `val/loss=1.2140`.
+  - The historical old DN-only run at epoch 41 had `val/loss=0.3698`, with best-so-far `0.3584` by epoch 29.
+  - So moving main proposals to full curve anchors alone is not sufficient; the new query geometry path is still materially underperforming the old DN implementation.
+
 Outputs:
 
-- Summary markdown: [outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_summary.md](../outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_summary.md)
-- Summary json: [outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_summary.json](../outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_summary.json)
-- Report: [outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_report.md](../outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_report.md)
 - Summary script: [scripts/summarize_addback_ablation.py](../scripts/summarize_addback_ablation.py)
+- Current summary artifacts are intentionally regenerated only after fresh reruns under the current data pipeline.
 
 How to regenerate the summary after runs finish:
 
@@ -111,11 +216,8 @@ python scripts/summarize_addback_ablation.py
 
 Current conclusion:
 
-1. `dn` is the strongest anti-memorization technique in this setup.
-2. `aux` is the second most harmful add-back.
-3. `one_to_many` has a moderate effect.
-4. `topk` has a small effect.
-5. `distinct` is nearly free in the overfit regime.
+- Stale pre-reset outputs were removed.
+- This suite needs to be rerun before drawing any updated ranking across `aux`, `dn`, `one_to_many`, `topk`, and `distinct`.
 
 ## Ablation 2: All Functions Except DN
 
@@ -153,13 +255,12 @@ python scripts/monitor_all_except_dn.py --interval-seconds 300
 
 Outputs:
 
-- Status markdown: [outputs/parametric_edge_training/current_sweep_analysis/all_except_dn_status.md](../outputs/parametric_edge_training/current_sweep_analysis/all_except_dn_status.md)
-- Status json: [outputs/parametric_edge_training/current_sweep_analysis/all_except_dn_status.json](../outputs/parametric_edge_training/current_sweep_analysis/all_except_dn_status.json)
-- Final report section appended into: [outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_report.md](../outputs/parametric_edge_training/current_sweep_analysis/addback_ablation_report.md)
+- Status artifacts should be regenerated after the suite is rerun under the current pipeline.
 
 Current conclusion:
 
-- The combined non-DN regularization stack degrades memorization noticeably, but still far less than DN itself.
+- Stale pre-reset outputs were removed.
+- Rerun required before interpreting the combined non-DN stack again.
 
 ## Ablation 3: Synthetic Matching-Cost Visualization
 

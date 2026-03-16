@@ -42,6 +42,36 @@ def _build_cost_matrix(
     return total
 
 
+def build_curve_cost_matrix(
+    logits: torch.Tensor,
+    curves: torch.Tensor,
+    tgt_curves: torch.Tensor,
+    tgt_boxes: torch.Tensor,
+    control_cost: float,
+    sample_cost: float,
+    box_cost: float,
+    giou_cost: float,
+    curve_distance_cost: float,
+    curve_match_point_count: int,
+    num_curve_samples: int,
+    valid_query_count: int = -1,
+) -> torch.Tensor:
+    return _build_cost_matrix(
+        logits=logits,
+        curves=curves,
+        tgt_curves=tgt_curves,
+        tgt_boxes=tgt_boxes,
+        control_cost=control_cost,
+        sample_cost=sample_cost,
+        box_cost=box_cost,
+        giou_cost=giou_cost,
+        curve_distance_cost=curve_distance_cost,
+        curve_match_point_count=curve_match_point_count,
+        num_curve_samples=num_curve_samples,
+        valid_query_count=valid_query_count,
+    )
+
+
 @torch.no_grad()
 def hungarian_curve_matching(
     logits: torch.Tensor,
@@ -80,67 +110,6 @@ def hungarian_curve_matching(
         )
         row_ind, col_ind = linear_sum_assignment(total_cost.detach().cpu().numpy())
         indices.append((torch.as_tensor(row_ind, dtype=torch.long, device=curves.device), torch.as_tensor(col_ind, dtype=torch.long, device=curves.device)))
-    return indices
-
-
-@torch.no_grad()
-def repeated_hungarian_curve_matching(
-    logits: torch.Tensor,
-    curves: torch.Tensor,
-    targets: List[dict],
-    repeat_factor: int,
-    control_cost: float = 5.0,
-    sample_cost: float = 2.0,
-    box_cost: float = 1.0,
-    giou_cost: float = 1.0,
-    curve_distance_cost: float = 0.0,
-    curve_match_point_count: int = 4,
-    num_curve_samples: int = 16,
-    active_counts: torch.Tensor = None,
-) -> List[Tuple[torch.Tensor, torch.Tensor]]:
-    if repeat_factor <= 1:
-        return hungarian_curve_matching(
-            logits=logits,
-            curves=curves,
-            targets=targets,
-            control_cost=control_cost,
-            sample_cost=sample_cost,
-            box_cost=box_cost,
-            giou_cost=giou_cost,
-            curve_distance_cost=curve_distance_cost,
-            curve_match_point_count=curve_match_point_count,
-            num_curve_samples=num_curve_samples,
-            active_counts=active_counts,
-        )
-    indices = []
-    for batch_idx, target in enumerate(targets):
-        tgt_curves = target['curves'].to(curves.device)
-        tgt_boxes = target['boxes'].to(curves.device)
-        if tgt_curves.numel() == 0:
-            indices.append((torch.empty(0, dtype=torch.long, device=curves.device), torch.empty(0, dtype=torch.long, device=curves.device)))
-            continue
-        total_cost = _build_cost_matrix(
-            logits=logits[batch_idx],
-            curves=curves[batch_idx],
-            tgt_curves=tgt_curves,
-            tgt_boxes=tgt_boxes,
-            control_cost=control_cost,
-            sample_cost=sample_cost,
-            box_cost=box_cost,
-            giou_cost=giou_cost,
-            curve_distance_cost=curve_distance_cost,
-            curve_match_point_count=curve_match_point_count,
-            num_curve_samples=num_curve_samples,
-            valid_query_count=int(active_counts[batch_idx].item()) if active_counts is not None else -1,
-        )
-        expanded_tgt_idx = torch.arange(tgt_curves.shape[0], device=curves.device).repeat(repeat_factor)
-        expanded_cost = total_cost[:, expanded_tgt_idx]
-        row_ind, col_ind = linear_sum_assignment(expanded_cost.detach().cpu().numpy())
-        mapped_tgt = expanded_tgt_idx[torch.as_tensor(col_ind, dtype=torch.long, device=curves.device)]
-        indices.append((
-            torch.as_tensor(row_ind, dtype=torch.long, device=curves.device),
-            mapped_tgt,
-        ))
     return indices
 
 

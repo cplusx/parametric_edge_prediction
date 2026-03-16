@@ -1,0 +1,23 @@
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix
+
+model:
+  dn_num_groups: 4
+  dn_noise_scale: 0.04
+
+loss:
+  dn_weight: 1.0
+  dn_curve_weight: 5.0
+
+logging:
+  wandb:
+    name: overfit-diverse16-2000-addback-dn-curve-anchor-fix
+    tags:
+      - overfit
+      - gpu
+      - diverse16
+      - 2000epoch
+      - addback
+      - dn
+      - curve-anchor-fix
+    save_dir: outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix/wandb

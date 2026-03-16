@@ -6,12 +6,22 @@ from typing import Dict, List, Optional
 
 
 EXPERIMENTS = [
-    ('memorization', 'outputs/parametric_edge_training/overfit_diverse16_2000_memorization'),
+    ('memorization', 'outputs/parametric_edge_training/overfit_diverse16_2000_memorization_base'),
     ('aux', 'outputs/parametric_edge_training/overfit_diverse16_2000_addback_aux'),
     ('dn', 'outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn'),
     ('one_to_many', 'outputs/parametric_edge_training/overfit_diverse16_2000_addback_onetomany'),
     ('topk', 'outputs/parametric_edge_training/overfit_diverse16_2000_addback_topk'),
     ('distinct', 'outputs/parametric_edge_training/overfit_diverse16_2000_addback_distinct'),
+]
+
+MAIN_LOSS_COMPONENTS = [
+    ('val/loss_ce', 'ce_weight', 1.0),
+    ('val/loss_ctrl', 'ctrl_weight', 5.0),
+    ('val/loss_endpoint', 'endpoint_weight', 2.0),
+    ('val/loss_bbox', 'bbox_weight', 2.0),
+    ('val/loss_giou', 'giou_weight', 1.0),
+    ('val/loss_curve_dist', 'curve_distance_weight', 2.0),
+    ('val/loss_extent', 'extent_weight', 0.0),
 ]
 
 
@@ -44,13 +54,60 @@ def _read_max_epochs(hparams_path: Optional[Path]) -> Optional[int]:
     return None
 
 
-def _read_metrics(metrics_path: Path) -> Dict:
+def _read_loss_weights(hparams_path: Optional[Path]) -> Dict[str, float]:
+    if hparams_path is None or not hparams_path.exists():
+        return {}
+
+    weights: Dict[str, float] = {}
+    in_loss = False
+    for line in hparams_path.read_text(encoding='utf-8').splitlines():
+        if not line.strip():
+            continue
+        if not line.startswith(' '):
+            in_loss = line.startswith('loss:')
+            continue
+        if not in_loss:
+            continue
+        if not line.startswith('  '):
+            break
+        key, _, raw_value = line.strip().partition(':')
+        value = raw_value.strip()
+        try:
+            weights[key] = float(value)
+        except ValueError:
+            continue
+    return weights
+
+
+def _to_float(value: Optional[str]) -> Optional[float]:
+    if value in {'', None}:
+        return None
+    return float(value)
+
+
+def _compute_main_loss(row: Dict[str, str], loss_weights: Dict[str, float]) -> Optional[float]:
+    total = 0.0
+    found_component = False
+    for metric_key, weight_key, default_weight in MAIN_LOSS_COMPONENTS:
+        metric_value = _to_float(row.get(metric_key))
+        if metric_value is None:
+            continue
+        total += loss_weights.get(weight_key, default_weight) * metric_value
+        found_component = True
+    return total if found_component else None
+
+
+def _read_metrics(metrics_path: Path, loss_weights: Dict[str, float]) -> Dict:
     best_val = None
     best_epoch = None
     best_step = None
+    best_val_main = None
+    best_main_epoch = None
+    best_main_step = None
     final_val = None
     final_epoch = None
     final_step = None
+    final_val_main = None
     train_rows = 0
     val_rows = 0
 
@@ -66,13 +123,19 @@ def _read_metrics(metrics_path: Path) -> Dict:
             val_loss = float(val_loss_raw)
             epoch = int(float(row['epoch'])) if row.get('epoch') not in {'', None} else None
             step = int(float(row['step'])) if row.get('step') not in {'', None} else None
+            val_loss_main = _compute_main_loss(row, loss_weights)
             final_val = val_loss
             final_epoch = epoch
             final_step = step
+            final_val_main = val_loss_main
             if best_val is None or val_loss < best_val:
                 best_val = val_loss
                 best_epoch = epoch
                 best_step = step
+            if val_loss_main is not None and (best_val_main is None or val_loss_main < best_val_main):
+                best_val_main = val_loss_main
+                best_main_epoch = epoch
+                best_main_step = step
 
     return {
         'metrics_path': str(metrics_path),
@@ -81,9 +144,13 @@ def _read_metrics(metrics_path: Path) -> Dict:
         'best_val_loss': best_val,
         'best_epoch': best_epoch,
         'best_step': best_step,
+        'best_val_loss_main': best_val_main,
+        'best_main_epoch': best_main_epoch,
+        'best_main_step': best_main_step,
         'final_val_loss': final_val,
         'final_epoch': final_epoch,
         'final_step': final_step,
+        'final_val_loss_main': final_val_main,
     }
 
 
@@ -111,13 +178,15 @@ def _collect_versions(root_dir: Path) -> List[Dict]:
     for metrics_path in _metrics_files(root_dir):
         hparams_path = _hparams_for_metrics(metrics_path)
         max_epochs = _read_max_epochs(hparams_path)
+        loss_weights = _read_loss_weights(hparams_path)
         version_summary = {
             'version': metrics_path.parent.name,
             'metrics_path': str(metrics_path),
             'hparams_path': None if hparams_path is None else str(hparams_path),
             'max_epochs': max_epochs,
+            'loss_weights': loss_weights,
         }
-        version_summary.update(_read_metrics(metrics_path))
+        version_summary.update(_read_metrics(metrics_path, loss_weights))
         version_summary['status'] = _status_from_summary(version_summary)
         versions.append(version_summary)
     return versions
@@ -156,10 +225,15 @@ def summarize_experiment(name: str, root: str) -> Dict:
         'best_val_loss': None,
         'best_epoch': None,
         'best_step': None,
+        'best_val_loss_main': None,
+        'best_main_epoch': None,
+        'best_main_step': None,
         'final_val_loss': None,
         'final_epoch': None,
         'final_step': None,
+        'final_val_loss_main': None,
         'delta_vs_memorization_best': None,
+        'delta_vs_memorization_main': None,
         'selected_version': None,
         'versions': versions,
     }
@@ -174,45 +248,65 @@ def summarize_experiment(name: str, root: str) -> Dict:
 
 def build_markdown(rows: List[Dict]) -> str:
     memorization_best = next((row['best_val_loss'] for row in rows if row['name'] == 'memorization'), None)
+    memorization_main = next((row['best_val_loss_main'] for row in rows if row['name'] == 'memorization'), None)
     for row in rows:
         if memorization_best is not None and row['best_val_loss'] is not None:
             row['delta_vs_memorization_best'] = row['best_val_loss'] - memorization_best
+        if memorization_main is not None and row['best_val_loss_main'] is not None:
+            row['delta_vs_memorization_main'] = row['best_val_loss_main'] - memorization_main
 
     lines = [
         '# Add-Back Ablation Summary',
         '',
-        '| Experiment | Version | Status | Best val_loss | Best epoch | Final val_loss | Delta vs memorization | Val rows | Checkpoint |',
-        '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |',
+        '| Experiment | Version | Status | Best val_loss_main | Main epoch | Delta main vs memorization | Best val_loss | Best epoch | Final val_loss | Val rows | Checkpoint |',
+        '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
     ]
 
     for row in rows:
         lines.append(
-            '| {name} | {version} | {status} | {best_val_loss} | {best_epoch} | {final_val_loss} | {delta} | {val_rows} | {checkpoint} |'.format(
+            '| {name} | {version} | {status} | {best_val_loss_main} | {best_main_epoch} | {delta_main} | {best_val_loss} | {best_epoch} | {final_val_loss} | {val_rows} | {checkpoint} |'.format(
                 name=row['name'],
                 version='-' if row['selected_version'] is None else row['selected_version'],
                 status=row['status'],
+                best_val_loss_main='-' if row['best_val_loss_main'] is None else f"{row['best_val_loss_main']:.4f}",
+                best_main_epoch='-' if row['best_main_epoch'] is None else row['best_main_epoch'],
+                delta_main='-' if row['delta_vs_memorization_main'] is None else f"{row['delta_vs_memorization_main']:+.4f}",
                 best_val_loss='-' if row['best_val_loss'] is None else f"{row['best_val_loss']:.4f}",
                 best_epoch='-' if row['best_epoch'] is None else row['best_epoch'],
                 final_val_loss='-' if row['final_val_loss'] is None else f"{row['final_val_loss']:.4f}",
-                delta='-' if row['delta_vs_memorization_best'] is None else f"{row['delta_vs_memorization_best']:+.4f}",
                 val_rows=row['val_rows'],
                 checkpoint='-' if row['best_checkpoint'] is None else Path(row['best_checkpoint']).name,
             )
         )
 
-    degradations = [
+    main_degradations = [
+        row for row in rows
+        if row['name'] != 'memorization' and row['delta_vs_memorization_main'] is not None
+    ]
+    main_degradations.sort(key=lambda row: row['delta_vs_memorization_main'], reverse=True)
+
+    lines.extend(['', '## Current ranking by best val/loss_main degradation', ''])
+    if not main_degradations:
+        lines.append('No add-back run has produced a validation point yet.')
+    else:
+        for index, row in enumerate(main_degradations, start=1):
+            lines.append(
+                f"{index}. {row['name']}: best val/loss_main {row['best_val_loss_main']:.4f} ({row['delta_vs_memorization_main']:+.4f} vs memorization, total best val/loss {row['best_val_loss']:.4f}, {row['selected_version']})"
+            )
+
+    total_degradations = [
         row for row in rows
         if row['name'] != 'memorization' and row['delta_vs_memorization_best'] is not None
     ]
-    degradations.sort(key=lambda row: row['delta_vs_memorization_best'], reverse=True)
+    total_degradations.sort(key=lambda row: row['delta_vs_memorization_best'], reverse=True)
 
-    lines.extend(['', '## Current ranking by best val_loss degradation', ''])
-    if not degradations:
+    lines.extend(['', '## Reference ranking by best val/loss degradation', ''])
+    if not total_degradations:
         lines.append('No add-back run has produced a validation point yet.')
     else:
-        for index, row in enumerate(degradations, start=1):
+        for index, row in enumerate(total_degradations, start=1):
             lines.append(
-                f"{index}. {row['name']}: best val_loss {row['best_val_loss']:.4f} ({row['delta_vs_memorization_best']:+.4f} vs memorization, {row['selected_version']})"
+                f"{index}. {row['name']}: best val/loss {row['best_val_loss']:.4f} ({row['delta_vs_memorization_best']:+.4f} vs memorization, best val/loss_main {row['best_val_loss_main']:.4f}, {row['selected_version']})"
             )
 
     extra_incomplete = []

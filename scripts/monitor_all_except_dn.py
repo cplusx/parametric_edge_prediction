@@ -90,7 +90,14 @@ def _visualization_snapshot(root_dir: Path) -> Dict:
             'latest_epoch': None,
             'latest_files': [],
         }
-    files = sorted([path for path in vis_dir.glob('epoch_*_*.png')], key=lambda path: (_parse_visualization_epoch(path.name), path.name))
+    files = sorted(
+        [
+            path
+            for pattern in ('epoch_*_*.jpg', 'epoch_*_*.png')
+            for path in vis_dir.glob(pattern)
+        ],
+        key=lambda path: (_parse_visualization_epoch(path.name), path.name),
+    )
     latest_epoch = _parse_visualization_epoch(files[-1].name) if files else None
     latest_files = [str(path) for path in files if _parse_visualization_epoch(path.name) == latest_epoch] if latest_epoch is not None else []
     return {

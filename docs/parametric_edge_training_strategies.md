@@ -30,6 +30,37 @@ Why:
 
 - The earlier `ResNet + vanilla DETR decoder` stack was sufficient for synthetic overfit diagnosis, but it was missing the backbone and query/proposal machinery that modern DETR systems rely on for stable training.
 
+## Formal BSDS Training Stack
+
+Current implementation:
+
+- Formal training is defined in [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml).
+- BSDS `train` and `val` annotation splits are used for optimization and validation.
+- BSDS `test` is kept separate for final evaluation via `trainer.test(..., ckpt_path='best')` after fitting.
+- Data roots are split explicitly by split name instead of overloading a single `input_root` / `edge_glob` pair.
+  - Code: [edge_datasets/parametric_edge_datamodule.py](../edge_datasets/parametric_edge_datamodule.py)
+  - Code: [train.py](../train.py)
+
+Current formal model size:
+
+- `hidden_dim: 384`
+- `nheads: 12`
+- `num_encoder_layers: 4`
+- `num_decoder_layers: 6`
+- `dim_feedforward: 1536`
+- `num_queries: 512`
+- `num_sampling_points: 8`
+
+Why:
+
+- The earlier overfit-oriented configs were useful for diagnosis, but they were not a realistic final training recipe.
+- Formal BSDS training needs split-aware data loading, a larger decoder/encoder budget, multi-GPU execution, and resumable checkpoints.
+
+Status:
+
+- The formal config and runtime plumbing are in place.
+- Parameter exploration and the first full 500-epoch production run are still pending.
+
 ## RGB Training Input
 
 Current implementation:
@@ -180,14 +211,53 @@ Effect:
 
 - Improves score calibration pressure without changing the geometry heads.
 
+## Graph-First Data Pipeline
+
+Current implementation:
+
+- Edge annotations are first converted into cached graph polylines, not directly resized/raster-warped targets.
+  - Code: [misc_utils/bezier_target_utils.py](../misc_utils/bezier_target_utils.py), `ensure_graph_cache()`
+- Training samples load the original RGB image and cached graph, then apply synchronized geometric transforms in graph space.
+  - Code: [edge_datasets/parametric_edge_dataset.py](../edge_datasets/parametric_edge_dataset.py)
+  - Code: [edge_datasets/graph_pipeline.py](../edge_datasets/graph_pipeline.py), `prepare_training_sample()`
+- Bezier targets are re-fit after resize / flip / affine / crop, so supervision matches the transformed image instead of an aliased raster edge map.
+  - Code: [edge_datasets/graph_pipeline.py](../edge_datasets/graph_pipeline.py), `build_targets_from_polylines()`
+- Persistent graph cache now lives under `edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent/`.
+- That directory is intentionally under `edge_data/` so cache naming stays coupled to the dataset and remains git-ignored.
+
+Training path:
+
+- Preserve aspect ratio while resizing up to the crop size.
+- Apply optional horizontal flip and mild affine perturbation jointly to the image and graph.
+- Use reflect-mode image resampling during affine warp to avoid black corners.
+- Random-crop to the configured fixed training size, currently `256 x 256` in the default config.
+
+Eval / test path:
+
+- Preserve aspect ratio.
+- Resize into the fixed canvas.
+- Pad with a per-image constant color, not reflect padding.
+- Shift graph coordinates by the same pad offset before target generation.
+
+Why:
+
+- Directly resizing binary edges aliases geometry and drifts supervision away from the real transformed structure.
+- Reflect padding is acceptable as an internal affine fill strategy, but it is not a valid eval-time letterbox policy because it visually duplicates image content without duplicating GT.
+
+Effect:
+
+- GT curves now stay aligned with both train-time augmentations and eval-time aspect-preserved inputs.
+- Eval visualizations no longer show mirrored border content with missing GT.
+
 ## Coordinate Normalization
 
 Current implementation:
 
-- Input images are resized to a fixed square size and normalized to `[0, 1]`.
-  - Code: [misc_utils/bezier_target_utils.py](../misc_utils/bezier_target_utils.py), `load_image_array()`
+- Input images are loaded at original resolution, transformed, then converted to fixed-size tensors normalized to `[0, 1]`.
+  - Code: [misc_utils/bezier_target_utils.py](../misc_utils/bezier_target_utils.py), `load_image_array_original()`
+  - Code: [edge_datasets/graph_pipeline.py](../edge_datasets/graph_pipeline.py)
 - Bezier control points are stored in normalized XY coordinates in `[0, 1]`, not raw pixel coordinates.
-  - Code: [misc_utils/bezier_target_utils.py](../misc_utils/bezier_target_utils.py), `normalize_control_points()`
+  - Code: [edge_datasets/graph_pipeline.py](../edge_datasets/graph_pipeline.py), `_normalize_xy_control_points()`
 - The normalization uses per-image scale:
   - `x /= max(width - 1, 1)`
   - `y /= max(height - 1, 1)`
@@ -303,9 +373,11 @@ Source:
 
 Current implementation:
 
-- Added repeated-target Hungarian matching to allow more than one query to learn from the same GT curve.
+- Uses Group DETR-style grouped training with `group_detr_num_groups` as the maximum number of query groups.
+- The active group count is sampled uniformly from `[1, K_max]` after applying the per-batch cap, so sparse batches do not always force grouped training and eval/test stay strictly one-group.
 - Code:
-  - [models/matcher.py](../models/matcher.py), `repeated_hungarian_curve_matching()`
+  - Current Group DETR-style one-to-many no longer uses repeated-target Hungarian matching; extra query groups are supervised with per-group one-to-one matching while decoder self-attention is masked across groups during training.
+  - [models/parametric_detr.py](../models/parametric_detr.py)
   - [models/losses.py](../models/losses.py), `_one_to_many_losses()`
 
 Motivation:
@@ -500,24 +572,119 @@ Source:
 
 Current implementation:
 
-- In addition to one-to-one matching and one-to-many repeated Hungarian, a top-k nearest-query positive objectness loss is added.
+- Top-k positive supervision is now a grouped-query auxiliary-layer extension, not a repeated-target Hungarian path.
+- For each GT and each auxiliary decoder layer, matches from all active query groups are collected; if truncation is enabled, only the best `K` group matches are kept, otherwise all group matches are used.
+- Rank-dependent weights are applied with `topk_positive_tau`, and final-layer inference remains standard one-to-one.
 - Code:
-  - [models/matcher.py](../models/matcher.py), `topk_curve_positive_indices()`
-  - [models/losses.py](../models/losses.py), `_topk_positive_object_loss()`
+  - [models/losses/regularizers.py](../models/losses/regularizers.py), `TopKPositiveLoss`
+  - [models/losses/matched.py](../models/losses/matched.py)
 
 Motivation:
 
-- Even one-to-many matching still leaves many potentially useful nearby queries unsupervised.
-- For dense curve prediction, several nearby queries can be geometrically plausible positives in early training.
+- Grouped training can expose up to `N` plausible matches per GT across groups, but using all of them all the time is often too permissive.
+- The useful control knob is therefore whether to truncate grouped positives, not whether to fall back to a different matching regime.
 
 Effect:
 
-- Helped stabilize objectness learning for nearby candidate queries.
-- Reduced the tendency for only a tiny subset of queries to carry all the gradient signal.
+- Keeps top-k semantically aligned with Group DETR-style grouped queries.
+- Allows `topk_positive_enabled=false` to mean “use every grouped positive,” which is the clean ablation baseline.
 
 Source:
 
 - Internal strategy inspired by the broader one-to-many supervision idea in Group DETR / H-DETR.
+
+## Distinct Query Regularization
+
+Current implementation:
+
+- Distinct regularization only compares queries within the same group.
+- It only penalizes pairs that are likely duplicates of the same GT surrogate, instead of globally penalizing any nearby confident queries.
+- Code:
+  - [models/losses/regularizers.py](../models/losses/regularizers.py), `DistinctQueryLoss`
+
+Why:
+
+- A global similarity penalty can suppress legitimate nearby edges.
+- Cross-group penalties also conflict with the purpose of grouped training.
+
+Effect:
+
+- The loss now targets duplicate queries more narrowly and is less likely to erase dense local structure.
+
+## Cache Warmup And Verification
+
+Current implementation:
+
+- Full-dataset graph-cache warmup, parallel dataloader timing, and verification visualizations are handled by:
+  - [scripts/precompute_graph_cache_and_benchmark.py](../scripts/precompute_graph_cache_and_benchmark.py)
+- Main visualization outputs are now saved as `.jpg`.
+- The same script also supports split-aware formal configs with separate `train/val/test` roots.
+
+Why:
+
+- The graph-first pipeline is only trustworthy if visual overlays and warm-cache throughput are checked after structural changes.
+
+Effect:
+
+- Cache preparation, timing, and visual spot-checks are now reproducible with one command instead of ad hoc snippets.
+
+Formal cache location:
+
+- [edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent](../edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent)
+
+Note:
+
+- Cache contents are data artifacts, not source artifacts. They are intentionally excluded from Git and should be regenerated locally if missing.
+
+## Multi-GPU Training Runtime
+
+Current implementation:
+
+- Training now supports `--resume-from` to continue from `last.ckpt` or any named checkpoint.
+- Lightning is configured to save both the monitored best checkpoint and `last.ckpt` for resume.
+- Gradient accumulation, precision, DDP strategy, and optional post-fit test evaluation are configurable from YAML.
+- Validation and test metrics use synchronized distributed logging.
+- Code:
+  - [train.py](../train.py)
+  - [pl_trainer/parametric_edge_trainer.py](../pl_trainer/parametric_edge_trainer.py)
+
+Formal defaults currently encoded:
+
+- `devices: 2`
+- `strategy: ddp_find_unused_parameters_false`
+- `precision: 16-mixed`
+- `accumulate_grad_batches: 4`
+- `save_top_k: 1` plus `save_last: true`
+
+Why:
+
+- The formal BSDS run is expected to be long enough that resume support is required.
+- A larger effective batch is easier to reach with gradient accumulation than by only increasing per-device batch size.
+
+Status:
+
+- Runtime support is in place.
+- Final batch / LR / scheduler choices still need to be validated by the pending search run.
+
+Measured on 2026-03-14 with `configs/parametric_edge/default.yaml`:
+
+- Full graph-cache precompute over `1063` images finished successfully.
+- Using `12` cache workers, cache generation took `2862.23s` total, about `0.37 samples/s` end to end.
+- After cache prep, a `4`-worker, `batch_size=1` DataLoader benchmark over the full dataset took `14.99s` total, about `70.94 samples/s`.
+- Warm-cache per-sample arrival statistics were:
+  - mean `14.10 ms`
+  - median `4.43 ms`
+  - p95 `56.53 ms`
+  - max `125.93 ms`
+- Verification artifacts were written to:
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/summary.json`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/per_image_read_times.csv`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/eval_samples_01.jpg`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/eval_samples_02.jpg`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/eval_samples_03.jpg`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/train_samples_01.jpg`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/train_samples_02.jpg`
+  - `outputs/parametric_edge_training/data_debug/cache_benchmark_v2/train_samples_03.jpg`
 
 ## Current Large-Query Overfit Takeaway
 

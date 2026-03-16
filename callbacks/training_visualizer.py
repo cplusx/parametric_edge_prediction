@@ -64,8 +64,8 @@ class ParametricEdgeVisualizer(pl.Callback):
         for batch_id, (src_idx, _) in enumerate(matched_indices):
             matched_curves.append(predictions['pred_curves'][batch_id, src_idx])
         vis_dir = Path(trainer.default_root_dir) / 'visualizations'
-        score_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_scores.png'
-        matched_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_matched.png'
+        score_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_scores.jpg'
+        matched_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_matched.jpg'
         render_curve_grid(batch['images'], batch['targets'], scored_curves, score_path)
         render_curve_grid(batch['images'], batch['targets'], matched_curves, matched_path)
         self._wandb_log_image(trainer, 'visualizations/scored_curves', score_path, f'epoch={trainer.current_epoch}')

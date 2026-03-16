@@ -70,7 +70,7 @@ def main():
             src_idx, _ = matched_indices[0]
             matched_curves = [outputs['pred_curves'][0, src_idx]]
             sample_id = targets[0]['sample_id']
-            render_curve_grid(images, targets, matched_curves, vis_dir / f'{sample_id}_matched.png')
+            render_curve_grid(images, targets, matched_curves, vis_dir / f'{sample_id}_matched.jpg')
             rows.append({
                 'sample_id': sample_id,
                 'num_targets': int(targets[0]['num_targets']),

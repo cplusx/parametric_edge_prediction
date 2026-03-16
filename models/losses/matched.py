@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -12,6 +12,7 @@ class ClassificationLoss(BaseLossComponent):
         self,
         pred_logits: torch.Tensor,
         target_classes: torch.Tensor,
+        query_weights: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         loss_cfg = self.config['loss']
         no_object_weight = float(loss_cfg.get('no_object_weight', 0.2))
@@ -27,9 +28,17 @@ class ClassificationLoss(BaseLossComponent):
             alpha_t = torch.where(target_object > 0.5, torch.full_like(target_object, focal_alpha), torch.full_like(target_object, 1.0 - focal_alpha))
             weight = alpha_t * (1.0 - pt).pow(focal_gamma)
             neg_scale = torch.where(target_object > 0.5, torch.ones_like(target_object), torch.full_like(target_object, no_object_weight))
-            return (bce * weight * neg_scale).mean()
+            loss = bce * weight * neg_scale
+            if query_weights is None:
+                return loss.mean()
+            query_weights = query_weights.to(loss.device, loss.dtype)
+            return (loss * query_weights).sum() / query_weights.sum().clamp_min(1e-6)
         class_weight = torch.tensor([1.0, no_object_weight], device=pred_logits.device)
-        return F.cross_entropy(pred_logits.transpose(1, 2), target_classes, weight=class_weight)
+        ce = F.cross_entropy(pred_logits.transpose(1, 2), target_classes, weight=class_weight, reduction='none')
+        if query_weights is None:
+            return ce.mean()
+        query_weights = query_weights.to(ce.device, ce.dtype)
+        return (ce * query_weights).sum() / query_weights.sum().clamp_min(1e-6)
 
 
 class MatchedCurveLoss(BaseLossComponent):
@@ -44,6 +53,8 @@ class MatchedCurveLoss(BaseLossComponent):
         targets: List[dict],
         indices: List[Tuple[torch.Tensor, torch.Tensor]],
         runtime_outputs: Dict[str, torch.Tensor],
+        match_weights: Optional[List[torch.Tensor]] = None,
+        query_weights: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         loss_cfg = self.config['loss']
         device = pred_logits.device
@@ -54,6 +65,7 @@ class MatchedCurveLoss(BaseLossComponent):
         matched_tgt_boxes = []
         matched_pred_extents = []
         matched_tgt_norm_lengths = []
+        matched_pair_weights = []
         for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
             if src_idx.numel() == 0:
                 continue
@@ -65,7 +77,9 @@ class MatchedCurveLoss(BaseLossComponent):
             if self.config['model'].get('curve_anchor_mode', 'sigmoid') == 'ref_point_delta' and 'pred_curve_extent' in runtime_outputs:
                 matched_pred_extents.append(runtime_outputs['pred_curve_extent'][batch_idx, src_idx])
                 matched_tgt_norm_lengths.append(targets[batch_idx]['curve_norm_lengths'][tgt_idx].to(device))
-        loss_ce = self.classification(pred_logits, target_classes)
+            if match_weights is not None:
+                matched_pair_weights.append(match_weights[batch_idx].to(device=device, dtype=pred_logits.dtype))
+        loss_ce = self.classification(pred_logits, target_classes, query_weights=query_weights)
         if matched_pred_curves:
             matched_pred_curves = torch.cat(matched_pred_curves, dim=0)
             matched_tgt_curves = torch.cat(matched_tgt_curves, dim=0)
@@ -92,6 +106,11 @@ class MatchedCurveLoss(BaseLossComponent):
                 alpha=float(loss_cfg.get('curvature_curve_distance_alpha', loss_cfg.get('curvature_weight_alpha', 0.0))),
                 power=float(loss_cfg.get('curvature_curve_distance_power', loss_cfg.get('curvature_weight_power', 1.0))),
             )
+            if matched_pair_weights:
+                pair_weights = torch.cat(matched_pair_weights, dim=0)
+                ctrl_weights = ctrl_weights * pair_weights
+                endpoint_weights = endpoint_weights * pair_weights
+                curve_weights = curve_weights * pair_weights
             ctrl_abs = torch.abs(matched_pred_curves - matched_tgt_curves).mean(dim=(1, 2))
             loss_ctrl = weighted_mean(ctrl_abs, ctrl_weights)
             endpoint_abs = torch.abs(matched_pred_curves[:, [0, -1]] - matched_tgt_curves[:, [0, -1]]).mean(dim=(1, 2))

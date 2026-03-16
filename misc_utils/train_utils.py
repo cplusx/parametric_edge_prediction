@@ -20,17 +20,24 @@ def sample_bezier_curves_torch(control_points: torch.Tensor, num_samples: int = 
     return torch.einsum('sk,nkd->nsd', basis, control_points)
 
 
-def build_dn_queries(targets: List[dict], num_dn_groups: int, noise_scale: float, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def build_dn_queries(
+    targets: List[dict],
+    num_dn_groups: int,
+    noise_scale: float,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     max_targets = max((target['curves'].shape[0] for target in targets), default=0)
     control_dim = targets[0]['curves'].shape[1] * 2 if targets and targets[0]['curves'].ndim == 3 else 12
     if max_targets == 0 or num_dn_groups <= 0:
         return (
+            torch.zeros((len(targets), 0, control_dim), device=device),
             torch.zeros((len(targets), 0, control_dim), device=device),
             torch.zeros((len(targets), 0), dtype=torch.bool, device=device),
             torch.zeros((len(targets), 0), dtype=torch.long, device=device),
         )
     dn_count = max_targets * num_dn_groups
     dn_curves = torch.zeros((len(targets), dn_count, control_dim), dtype=torch.float32, device=device)
+    dn_targets = torch.zeros((len(targets), dn_count, control_dim), dtype=torch.float32, device=device)
     dn_mask = torch.zeros((len(targets), dn_count), dtype=torch.bool, device=device)
     dn_labels = torch.ones((len(targets), dn_count), dtype=torch.long, device=device)
     for batch_idx, target in enumerate(targets):
@@ -44,6 +51,7 @@ def build_dn_queries(targets: List[dict], num_dn_groups: int, noise_scale: float
             end = start + count
             noise = torch.randn_like(flat) * noise_scale
             dn_curves[batch_idx, start:end] = (flat + noise).clamp(0.0, 1.0)
+            dn_targets[batch_idx, start:end] = flat
             dn_mask[batch_idx, start:end] = True
             dn_labels[batch_idx, start:end] = 0
-    return dn_curves, dn_mask, dn_labels
+    return dn_curves, dn_targets, dn_mask, dn_labels

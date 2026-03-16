@@ -74,6 +74,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
     parser.add_argument('--override-config', default=None)
+    parser.add_argument('--resume-from', default=None)
     args = parser.parse_args()
 
     config = load_config(args.config, args.override_config)
@@ -88,9 +89,10 @@ def main() -> None:
     checkpoint = ModelCheckpoint(
         dirpath=root_dir / 'checkpoints',
         save_top_k=1,
-        monitor='val/loss',
+        save_last=True,
+        monitor='val_loss_main',
         mode='min',
-        filename='best-{epoch:03d}-{val_loss:.4f}',
+        filename='best-{epoch:03d}-{val_loss_main:.4f}',
         auto_insert_metric_name=False,
     )
     visualizer = ParametricEdgeVisualizer(
@@ -103,6 +105,9 @@ def main() -> None:
         max_epochs=int(config['trainer']['max_epochs']),
         accelerator=config['trainer'].get('accelerator', 'auto'),
         devices=config['trainer'].get('devices', 1),
+        strategy=config['trainer'].get('strategy', 'auto'),
+        precision=config['trainer'].get('precision', '32-true'),
+        accumulate_grad_batches=int(config['trainer'].get('accumulate_grad_batches', 1)),
         log_every_n_steps=int(config['trainer'].get('log_every_n_steps', 1)),
         limit_train_batches=config['trainer'].get('limit_train_batches', 1.0),
         limit_val_batches=config['trainer'].get('limit_val_batches', 1.0),
@@ -111,8 +116,13 @@ def main() -> None:
         callbacks=[checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer],
         logger=loggers if loggers else False,
         deterministic=bool(config['trainer'].get('deterministic', True)),
+        benchmark=bool(config['trainer'].get('benchmark', False)),
+        num_sanity_val_steps=int(config['trainer'].get('num_sanity_val_steps', 2)),
+        check_val_every_n_epoch=int(config['trainer'].get('check_val_every_n_epoch', 1)),
     )
-    trainer.fit(model, datamodule=datamodule)
+    trainer.fit(model, datamodule=datamodule, ckpt_path=args.resume_from)
+    if bool(config['trainer'].get('run_test_after_fit', True)):
+        trainer.test(model=model, datamodule=datamodule, ckpt_path='best')
 
 
 if __name__ == '__main__':

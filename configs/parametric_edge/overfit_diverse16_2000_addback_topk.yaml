@@ -2,6 +2,8 @@ trainer:
   default_root_dir: outputs/parametric_edge_training/overfit_diverse16_2000_addback_topk
 
 loss:
+  topk_positive_enabled: true
+  topk_positive_layer_k: [2, 2, 2, 2, 2]
   topk_positive_weight: 0.2
 
 logging:

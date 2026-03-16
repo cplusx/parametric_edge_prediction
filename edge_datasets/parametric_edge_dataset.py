@@ -1,10 +1,12 @@
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from misc_utils.bezier_target_utils import ensure_target_cache, load_cached_targets, load_image_array, resolve_input_path
+from edge_datasets.graph_pipeline import prepare_eval_sample, prepare_training_sample
+from misc_utils.bezier_target_utils import ensure_graph_cache, load_cached_graph, load_image_array_original, resolve_input_path, unpack_polylines
 
 
 class ParametricEdgeDataset(Dataset):
@@ -19,6 +21,9 @@ class ParametricEdgeDataset(Dataset):
         target_degree: int = 3,
         min_curve_length: float = 3.0,
         max_targets: int = 128,
+        split: str = 'train',
+        train_augment: bool = False,
+        augment_cfg: Optional[Dict] = None,
     ) -> None:
         self.edge_paths = [Path(path) for path in edge_paths]
         self.cache_root = Path(cache_root)
@@ -29,30 +34,54 @@ class ParametricEdgeDataset(Dataset):
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)
         self.max_targets = int(max_targets)
+        self.split = str(split)
+        self.train_augment = bool(train_augment)
+        self.augment_cfg = dict(augment_cfg or {})
 
     def __len__(self) -> int:
         return len(self.edge_paths)
 
     def __getitem__(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
-        cache_path = ensure_target_cache(
+        cache_path = ensure_graph_cache(
             edge_path=edge_path,
             cache_root=self.cache_root,
             version_name=self.version_name,
-            target_degree=self.target_degree,
-            min_curve_length=self.min_curve_length,
         )
-        target_data = load_cached_targets(cache_path)
+        graph_data = load_cached_graph(cache_path)
         image_path = resolve_input_path(edge_path, self.input_root)
-        image = load_image_array(image_path, image_size=self.image_size, rgb=self.rgb_input)
-        curves = torch.from_numpy(target_data['curves'][: self.max_targets]).float()
-        boxes = torch.from_numpy(target_data['curve_boxes'][: self.max_targets]).float()
-        lengths = torch.from_numpy(target_data['curve_lengths'][: self.max_targets]).float()
-        norm_lengths = torch.from_numpy(target_data.get('curve_norm_lengths', target_data['curve_lengths'][: self.max_targets] * 0.0)).float()
-        curvatures = torch.from_numpy(target_data.get('curve_curvatures', target_data['curve_lengths'][: self.max_targets] * 0.0)).float()
+        image = load_image_array_original(image_path, rgb=self.rgb_input)
+        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+        if self.split == 'train' and self.train_augment:
+            image_hwc, target_data = prepare_training_sample(
+                image=image,
+                polylines=polylines,
+                image_size=self.image_size,
+                target_degree=self.target_degree,
+                min_curve_length=self.min_curve_length,
+                max_targets=self.max_targets,
+                augment_cfg=self.augment_cfg,
+                rng=rng,
+            )
+        else:
+            image_hwc, target_data = prepare_eval_sample(
+                image=image,
+                polylines=polylines,
+                image_size=self.image_size,
+                target_degree=self.target_degree,
+                min_curve_length=self.min_curve_length,
+                max_targets=self.max_targets,
+            )
+        image_chw = np.transpose(image_hwc, (2, 0, 1))
+        curves = torch.from_numpy(target_data['curves']).float()
+        boxes = torch.from_numpy(target_data['curve_boxes']).float()
+        lengths = torch.from_numpy(target_data['curve_lengths']).float()
+        norm_lengths = torch.from_numpy(target_data.get('curve_norm_lengths', target_data['curve_lengths'] * 0.0)).float()
+        curvatures = torch.from_numpy(target_data.get('curve_curvatures', target_data['curve_lengths'] * 0.0)).float()
         labels = torch.ones((curves.shape[0],), dtype=torch.long)
         return {
-            'image': torch.from_numpy(image).float(),
+            'image': torch.from_numpy(image_chw).float(),
             'target': {
                 'labels': labels,
                 'curves': curves,
