@@ -208,6 +208,7 @@ __marimo__/
 
 outputs/
 gt_rgb/
+bezierization/_native_build/
 
 # Project runtime outputs
 bezierize_animation/outputs/

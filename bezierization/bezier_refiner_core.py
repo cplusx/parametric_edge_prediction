@@ -9,8 +9,17 @@ from skimage.draw import line
 from collections import Counter
 from collections import defaultdict
 from scipy.spatial import distance_matrix
-from scipy.special import comb
 from PIL import Image
+
+from bezierization.fast_backend import (
+    bernstein_basis as fast_bernstein_basis,
+    chord_length_parameterize as fast_chord_length_parameterize,
+    control_polygon_is_stable as fast_control_polygon_is_stable,
+    evaluate_bezier as fast_evaluate_bezier,
+    fit_error_metrics as fast_fit_error_metrics,
+    path_length as fast_path_length,
+    prepare_fit_context as fast_prepare_fit_context,
+)
 
 def build_graph(skeleton, connectivity=2):
     """
@@ -464,10 +473,7 @@ def extract_ordered_edge_paths(edge_map, connectivity=2):
     return paths, skeleton, graph, junctions, endpoints
 
 def path_length(points):
-    if len(points) < 2:
-        return 0.0
-    deltas = np.diff(points.astype(np.float64), axis=0)
-    return float(np.linalg.norm(deltas, axis=1).sum())
+    return fast_path_length(points)
 
 def smooth_polyline(points, window=5):
     if len(points) < 3 or window <= 1:
@@ -499,31 +505,16 @@ def compute_turning_angles(points):
     return angles
 
 def chord_length_parameterize(points):
-    if len(points) == 1:
-        return np.array([0.0], dtype=np.float64)
-    deltas = np.diff(points.astype(np.float64), axis=0)
-    distances = np.linalg.norm(deltas, axis=1)
-    cumulative = np.concatenate([[0.0], np.cumsum(distances)])
-    total = cumulative[-1]
-    if total < 1e-8:
-        return np.linspace(0.0, 1.0, len(points))
-    return cumulative / total
+    return fast_chord_length_parameterize(points)
 
 def bernstein_basis(degree, t_values):
-    t_values = np.asarray(t_values, dtype=np.float64)
-    basis = np.zeros((len(t_values), degree + 1), dtype=np.float64)
-    for i in range(degree + 1):
-        basis[:, i] = comb(degree, i) * (t_values ** i) * ((1.0 - t_values) ** (degree - i))
-    return basis
+    return fast_bernstein_basis(degree, t_values)
 
-def evaluate_bezier(control_points, t_values):
+def _evaluate_bezier_de_casteljau(control_points, t_values):
     control_points = np.asarray(control_points, dtype=np.float64)
     t_values = np.clip(np.asarray(t_values, dtype=np.float64), 0.0, 1.0)
     if not np.isfinite(control_points).all() or not np.isfinite(t_values).all():
         return np.full((len(t_values), control_points.shape[1]), np.nan, dtype=np.float64)
-    # Use De Casteljau evaluation instead of Bernstein matrix multiplication.
-    # The degree here is small, but this path is materially more stable on
-    # occasional ill-conditioned control polygons and avoids matmul warnings.
     work = np.broadcast_to(control_points, (len(t_values),) + control_points.shape).copy()
     one_minus_t = (1.0 - t_values)[:, None, None]
     t_column = t_values[:, None, None]
@@ -535,38 +526,59 @@ def evaluate_bezier(control_points, t_values):
         return np.full((len(t_values), control_points.shape[1]), np.nan, dtype=np.float64)
     return evaluated
 
+def evaluate_bezier(control_points, t_values, basis=None):
+    control_points = np.asarray(control_points, dtype=np.float64)
+    t_values = np.clip(np.asarray(t_values, dtype=np.float64), 0.0, 1.0)
+    if not np.isfinite(control_points).all() or not np.isfinite(t_values).all():
+        return np.full((len(t_values), control_points.shape[1]), np.nan, dtype=np.float64)
+    if basis is None:
+        basis = bernstein_basis(len(control_points) - 1, t_values)
+    with np.errstate(over='ignore', invalid='ignore'):
+        evaluated = fast_evaluate_bezier(control_points, basis)
+    if np.isfinite(evaluated).all():
+        return evaluated
+    return _evaluate_bezier_de_casteljau(control_points, t_values)
 
-def _control_polygon_is_stable(control_points, points, max_multiplier=100.0, max_offset_multiplier=25.0):
+def _control_polygon_is_stable(
+    control_points,
+    points,
+    max_multiplier=100.0,
+    max_offset_multiplier=25.0,
+    data_scale=None,
+    points_center=None,
+):
     control_points = np.asarray(control_points, dtype=np.float64)
     points = np.asarray(points, dtype=np.float64)
     if not np.isfinite(control_points).all():
         return False
-    data_scale = max(
-        path_length(points),
-        np.linalg.norm(points[-1] - points[0]) if len(points) >= 2 else 0.0,
-        np.linalg.norm(points.max(axis=0) - points.min(axis=0)) if len(points) else 0.0,
-        1.0,
+    if data_scale is None or points_center is None:
+        _, _, data_scale, points_center = fast_prepare_fit_context(points)
+    return fast_control_polygon_is_stable(
+        control_points,
+        points,
+        data_scale=data_scale,
+        points_center=points_center,
+        max_multiplier=max_multiplier,
+        max_offset_multiplier=max_offset_multiplier,
     )
-    control_polygon_length = path_length(control_points)
-    if not np.isfinite(control_polygon_length) or control_polygon_length > max_multiplier * data_scale:
-        return False
-    points_center = points.mean(axis=0)
-    max_center_offset = float(np.linalg.norm(control_points - points_center, axis=1).max())
-    if not np.isfinite(max_center_offset) or max_center_offset > max_offset_multiplier * data_scale:
-        return False
-    return True
 
-def fit_bezier_curve(points, degree):
+def _prepare_fit_context(points):
+    return fast_prepare_fit_context(points)
+
+
+def fit_bezier_curve(points, degree, fit_context=None):
     """
     Least-squares Bezier fitting with fixed endpoints.
     """
-    pts = np.asarray(points, dtype=np.float64)
+    if fit_context is None:
+        pts, t_values, data_scale, points_center = _prepare_fit_context(points)
+    else:
+        pts, t_values, data_scale, points_center = fit_context
     if len(pts) < 2:
         return None
     if degree < 1:
         raise ValueError("Bezier degree must be >= 1")
     degree = min(int(degree), max(1, len(pts) - 1))
-    t_values = chord_length_parameterize(pts)
     basis = bernstein_basis(degree, t_values)
 
     if degree == 1:
@@ -576,18 +588,23 @@ def fit_bezier_curve(points, degree):
         inner_basis = basis[:, 1:-1]
         if inner_basis.size == 0:
             return None
-        condition_number = np.linalg.cond(inner_basis)
+        rhs = pts - endpoints[:, [0]] * pts[0] - endpoints[:, [1]] * pts[-1]
+        inner_control, _, rank, singular_values = np.linalg.lstsq(inner_basis, rhs, rcond=None)
+        if singular_values.size == 0 or rank < inner_basis.shape[1]:
+            return None
+        smallest = float(singular_values[-1])
+        if smallest <= 0.0:
+            return None
+        condition_number = float(singular_values[0] / smallest)
         if not np.isfinite(condition_number) or condition_number > 1e8:
             return None
-        rhs = pts - endpoints[:, [0]] * pts[0] - endpoints[:, [1]] * pts[-1]
-        inner_control, *_ = np.linalg.lstsq(inner_basis, rhs, rcond=None)
         control_points = np.vstack([pts[0], inner_control, pts[-1]])
 
     if not np.isfinite(control_points).all():
         return None
-    if not _control_polygon_is_stable(control_points, pts):
+    if not _control_polygon_is_stable(control_points, pts, data_scale=data_scale, points_center=points_center):
         return None
-    fitted = evaluate_bezier(control_points, t_values)
+    fitted = evaluate_bezier(control_points, t_values, basis=basis)
     if not np.isfinite(fitted).all():
         return None
     return {
@@ -598,11 +615,7 @@ def fit_bezier_curve(points, degree):
     }
 
 def fit_error_metrics(points, fitted_points):
-    distances = np.linalg.norm(np.asarray(points, dtype=np.float64) - np.asarray(fitted_points, dtype=np.float64), axis=1)
-    return {
-        "mean_error": float(distances.mean()) if len(distances) else 0.0,
-        "max_error": float(distances.max()) if len(distances) else 0.0,
-    }
+    return fast_fit_error_metrics(points, fitted_points)
 
 def find_corner_candidates(points, angle_threshold_deg=55.0, min_index_gap=5, endpoint_margin=3):
     if len(points) < 3:
@@ -704,9 +717,10 @@ def split_polyline_by_corners(
     return sorted(split_indices)
 
 def choose_best_bezier_fit(points, max_degree=5, mean_error_threshold=0.75, max_error_threshold=2.5):
+    fit_context = _prepare_fit_context(points)
     best_fit = None
     for degree in range(1, max_degree + 1):
-        fit = fit_bezier_curve(points, degree=degree)
+        fit = fit_bezier_curve(points, degree=degree, fit_context=fit_context)
         if fit is None:
             continue
         metrics = fit_error_metrics(points, fit["fitted_points"])
@@ -1052,6 +1066,7 @@ def _segment_chunk_with_dp(
     extrema_window=5,
     short_segment_penalty_weight=0.9,
     preferred_min_segment_ratio=0.45,
+    candidate_length_factor=1.75,
 ):
     chunk = np.asarray(chunk, dtype=np.float64)
     n_points = len(chunk)
@@ -1061,17 +1076,19 @@ def _segment_chunk_with_dp(
     min_segment_points = max(2, min_points)
     fit_cache = {}
     anchor_strengths = compute_split_anchor_strengths(chunk, extrema_window=extrema_window)
-    total_length = path_length(chunk)
+    cumulative_lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(chunk, axis=0), axis=1))])
+    total_length = float(cumulative_lengths[-1])
     preferred_min_length = min(
         max_segment_length * preferred_min_segment_ratio,
         total_length * 0.45,
     )
+    max_candidate_length = max(max_segment_length * candidate_length_factor, preferred_min_length * 2.0)
     dp = [None] * n_points
     dp[0] = (0, 0.0, 0.0, [])
 
     for end_idx in range(1, n_points):
         best_state = None
-        for start_idx in range(0, end_idx):
+        for start_idx in range(end_idx - 1, -1, -1):
             prev_state = dp[start_idx]
             if prev_state is None:
                 continue
@@ -1080,6 +1097,9 @@ def _segment_chunk_with_dp(
                 continue
             if start_idx == 0 and end_idx < n_points - 1 and point_count < min_segment_points:
                 continue
+            segment_length = float(cumulative_lengths[end_idx] - cumulative_lengths[start_idx])
+            if start_idx > 0 and segment_length > max_candidate_length:
+                break
 
             cache_key = (start_idx, end_idx)
             if cache_key not in fit_cache:
@@ -1096,7 +1116,6 @@ def _segment_chunk_with_dp(
                 continue
 
             split_penalty = prev_state[1]
-            segment_length = path_length(fit["points"])
             if preferred_min_length > 0.0 and segment_length < preferred_min_length:
                 split_penalty += short_segment_penalty_weight * (preferred_min_length - segment_length) / preferred_min_length
             if end_idx < n_points - 1:
@@ -1708,7 +1727,8 @@ def visualize_colored_segments(edge_map, fitted_paths, output_path, samples_per_
     plt.close()
 
 def run_bezier_refinement(
-    image_path,
+    image_path=None,
+    edge_map_array=None,
     max_degree=5,
     mean_error_threshold=0.6,
     max_error_threshold=2.0,
@@ -1743,10 +1763,19 @@ def run_bezier_refinement(
     bundle_consistency_snap_window=28.0,
     bundle_consistency_snap_anchor_strength=0.58,
     connectivity=2,
+    compute_raster=True,
+    compute_summary=True,
+    compute_metrics=True,
+    include_debug_artifacts=True,
     output_dir=None,
 ):
-    image = np.array(Image.open(image_path).convert("L"))
-    edge_map = (image > 127).astype(np.uint8)
+    if edge_map_array is not None:
+        edge_map = (np.asarray(edge_map_array) > 0).astype(np.uint8)
+    else:
+        if image_path is None:
+            raise ValueError("Either image_path or edge_map_array must be provided")
+        image = np.array(Image.open(image_path).convert("L"))
+        edge_map = (image > 127).astype(np.uint8)
     paths, skeleton, graph, junctions, endpoints = extract_ordered_edge_paths(edge_map, connectivity=connectivity)
     fitted_paths, dropped_paths = fit_paths_with_piecewise_bezier(
         paths,
@@ -1784,28 +1813,39 @@ def run_bezier_refinement(
         bundle_consistency_snap_window=bundle_consistency_snap_window,
         bundle_consistency_snap_anchor_strength=bundle_consistency_snap_anchor_strength,
     )
-    fitted_raster, sampled_points = render_piecewise_fits(edge_map.shape, fitted_paths)
-    summary = summarize_piecewise_fits(fitted_paths)
-    metrics = evaluate_fit(edge_map, fitted_raster)
+    fitted_raster = None
+    sampled_points = None
+    if compute_raster or compute_metrics or output_dir is not None:
+        fitted_raster, sampled_points = render_piecewise_fits(edge_map.shape, fitted_paths)
+
+    summary = summarize_piecewise_fits(fitted_paths) if compute_summary else None
+    metrics = evaluate_fit(edge_map, fitted_raster) if compute_metrics else None
 
     result = {
-        "edge_map": edge_map,
-        "paths": paths,
-        "skeleton": skeleton,
-        "graph": graph,
-        "junctions": junctions,
-        "endpoints": endpoints,
         "fitted_paths": fitted_paths,
         "dropped_paths": dropped_paths,
-        "fitted_raster": fitted_raster,
-        "sampled_points": sampled_points,
-        "summary": summary,
-        "metrics": metrics,
     }
+    if include_debug_artifacts:
+        result.update({
+            "edge_map": edge_map,
+            "paths": paths,
+            "skeleton": skeleton,
+            "graph": graph,
+            "junctions": junctions,
+            "endpoints": endpoints,
+        })
+    if fitted_raster is not None:
+        result["fitted_raster"] = fitted_raster
+    if sampled_points is not None:
+        result["sampled_points"] = sampled_points
+    if summary is not None:
+        result["summary"] = summary
+    if metrics is not None:
+        result["metrics"] = metrics
 
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
-        basename = os.path.splitext(os.path.basename(image_path))[0]
+        basename = os.path.splitext(os.path.basename(image_path))[0] if image_path is not None else "edge_map"
         overlay_path = os.path.join(output_dir, f"{basename}_bezier_overlay.png")
         colored_overlay_path = os.path.join(output_dir, f"{basename}_bezier_colored_overlay.png")
         fitted_path = os.path.join(output_dir, f"{basename}_bezier_fit.png")

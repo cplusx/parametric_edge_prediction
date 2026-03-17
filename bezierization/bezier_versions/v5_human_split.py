@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
 }
 
 
-def run_refiner(image_path, output_dir=None, **overrides):
+def run_refiner(image_path=None, output_dir=None, image_array=None, **overrides):
     config = DEFAULT_CONFIG.copy()
     config.update(overrides)
-    return run_bezier_refinement(image_path=image_path, output_dir=output_dir, **config)
+    return run_bezier_refinement(image_path=image_path, edge_map_array=image_array, output_dir=output_dir, **config)

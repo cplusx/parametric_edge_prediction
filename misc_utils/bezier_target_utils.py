@@ -1,6 +1,5 @@
 import hashlib
 import json
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -172,11 +171,16 @@ def load_binary_edge_annotation(edge_path: Path) -> np.ndarray:
 
 def extract_cubic_targets(edge_path: Path, version_name: str, target_degree: int, min_curve_length: float) -> Dict:
     edge_binary = load_binary_edge_annotation(edge_path)
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
-        Image.fromarray(edge_binary, mode='L').save(tmp.name)
-        result = run_version(version_name, image_path=str(tmp.name), output_dir=None)
-    edge_map = result['edge_map']
-    height, width = edge_map.shape[:2]
+    result = run_version(
+        version_name,
+        image_array=edge_binary,
+        output_dir=None,
+        compute_raster=False,
+        compute_summary=False,
+        compute_metrics=False,
+        include_debug_artifacts=False,
+    )
+    height, width = edge_binary.shape[:2]
     curves: List[np.ndarray] = []
     lengths: List[float] = []
     boxes: List[List[float]] = []
@@ -232,8 +236,8 @@ def extract_cubic_targets(edge_path: Path, version_name: str, target_degree: int
         'image_size': np.asarray([height, width], dtype=np.int64),
         'path': str(edge_path),
         'image_id': image_id_from_stem(edge_path.stem),
-        'metrics_f1': float(result['metrics']['f1']),
-        'metrics_chamfer': float(result['metrics']['chamfer']),
+        'metrics_f1': 0.0,
+        'metrics_chamfer': 0.0,
     }
 
 
@@ -273,11 +277,16 @@ def unpack_polylines(points: np.ndarray, offsets: np.ndarray) -> List[np.ndarray
 
 def extract_graph_segments(edge_path: Path, version_name: str) -> Dict:
     edge_binary = load_binary_edge_annotation(edge_path)
-    with tempfile.NamedTemporaryFile(suffix='.png', delete=True) as tmp:
-        Image.fromarray(edge_binary, mode='L').save(tmp.name)
-        result = run_version(version_name, image_path=str(tmp.name), output_dir=None)
-    edge_map = result['edge_map']
-    height, width = edge_map.shape[:2]
+    result = run_version(
+        version_name,
+        image_array=edge_binary,
+        output_dir=None,
+        compute_raster=False,
+        compute_summary=False,
+        compute_metrics=False,
+        include_debug_artifacts=False,
+    )
+    height, width = edge_binary.shape[:2]
     polylines = _collect_graph_polylines(result)
     packed_points, packed_offsets = _pack_polylines(polylines)
     return {

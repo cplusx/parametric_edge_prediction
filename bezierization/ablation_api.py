@@ -14,6 +14,6 @@ def load_version(version_name):
     return module
 
 
-def run_version(version_name, image_path, output_dir=None, **overrides):
+def run_version(version_name, image_path=None, output_dir=None, image_array=None, **overrides):
     module = load_version(version_name)
-    return module.run_refiner(image_path=image_path, output_dir=output_dir, **overrides)
+    return module.run_refiner(image_path=image_path, output_dir=output_dir, image_array=image_array, **overrides)
