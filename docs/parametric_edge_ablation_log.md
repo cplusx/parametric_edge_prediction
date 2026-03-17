@@ -64,17 +64,13 @@ Purpose:
 
 Config:
 
-- [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml)
+- [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
 
 Current intended command:
 
 ```bash
 python train.py \
-  --config configs/parametric_edge/formal_bsds_train_val_test.yaml
-
-python train.py \
-  --config configs/parametric_edge/formal_bsds_train_val_test.yaml \
-  --override-config configs/parametric_edge/formal_bsds_hparam_search_50ep.yaml
+  --config configs/parametric_edge/default.yaml
 ```
 
 Current runtime design:
@@ -87,6 +83,8 @@ Current runtime design:
 - Use `ddp_find_unused_parameters_true` because grouped-query training activates only a subset of groups on some steps.
 - Use `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2`, giving effective global batch size 40.
 - Use `channels_last: true` because it removes the observed DDP grad-stride warning and slightly improves short-run throughput.
+- Use the selected geometry-focused loss setting with `bbox_weight: 0.0` and `extent_weight: 1.0`.
+- Record training-set visualizations every 500 iterations in addition to periodic validation visualizations.
 
 Status:
 
@@ -95,8 +93,8 @@ Status:
 - Quick 2-GPU parameter probes under the formal config found `batch_size: 10`, `accumulate_grad_batches: 2` to be the best tested setting among the checked `8 x 2`, `10 x 2`, and `12 x 2` per-GPU batch candidates.
 - A short A/B benchmark showed that enabling `channels_last` removes the 1x1-conv grad-stride warning seen under DDP and marginally improves wall time on the same 8-batch micro-run.
 - The grouped auxiliary losses are now forced to stay active during training by using the maximum valid group count instead of random `1..K` sampling; this removes the previous step-to-step zero spikes in `loss_om_*` and `loss_topk_pos_*`.
-- The 50-epoch search override now uses `lr: 5e-5`, `backbone_lr: 5e-6`, and `warmup_epochs: 5`.
-- The first full formal run should use the base config directly, since those tuned values are now folded into [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml).
+- The temporary 50-epoch search configs and search-run artifacts were removed after selecting the final default recipe.
+- The first full formal run should use the default config directly, since the selected setting is now folded into [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml).
 
 Important reset on 2026-03-14:
 

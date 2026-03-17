@@ -10,8 +10,9 @@ For a visual overview of how main queries, DN queries, and decoder refinement fi
 
 Current default configuration now uses:
 
-- RGB image input from `edge_data/HED-BSDS/images/test`
-- Parametric targets from `edge_data/HED-BSDS/gt_rgb/test`
+- merged BSDS `train + val` supervision for optimization and BSDS `test` for validation and test
+- RGB image input from split-specific BSDS image roots
+- geometry-focused loss weights with bbox disabled and extent retained
 - `DINOv2` vision transformer backbone
 - FPN-like multi-scale feature pyramid built from DINOv2 intermediate features
 - two-stage proposal generation from encoded memory tokens
@@ -19,6 +20,8 @@ Current default configuration now uses:
 - iterative reference-point refinement
 - denoising queries enabled
 - focal classification loss enabled
+- 2-GPU mixed-precision training for 500 epochs
+- validation visualization every 20 epochs plus training-set visualization every 500 iterations
 
 Code:
 
@@ -34,7 +37,7 @@ Why:
 
 Current implementation:
 
-- Formal training is defined in [configs/parametric_edge/formal_bsds_train_val_test.yaml](../configs/parametric_edge/formal_bsds_train_val_test.yaml).
+- Formal training is now the default config in [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml).
 - BSDS `train` and `val` annotation splits are merged for optimization.
 - BSDS `test` is used as the validation split for model selection.
 - Data roots are split explicitly by split name instead of overloading a single `input_root` / `edge_glob` pair.
@@ -58,7 +61,7 @@ Why:
 
 Status:
 
-- The formal config and runtime plumbing are in place.
+- The formal config and runtime plumbing are in place in the default config.
 - The split-aware formal cache benchmark completed successfully after warming 2696 graph-cache entries.
 - Validation plus test dataloader benchmarking covered 1609 samples at about 136.1 samples/sec overall, with p95 per-sample arrival about 46.6 ms.
 - A short 2-GPU DDP smoke test completed successfully after switching grouped-query training to `ddp_find_unused_parameters_true`.
@@ -67,6 +70,7 @@ Status:
 - Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
 - Grouped one-to-many and top-k auxiliary losses used to drop to zero on random training steps because the active group count was sampled uniformly from `1..group_limit`; the formal config now uses `group_detr_active_group_policy: max` so those grouped losses stay active consistently during training.
 - The extent heads were being logged but structurally gated off in the matched loss for the current parameterization; that gate is removed so extent losses now reflect the predicted normalized extent whenever the model emits extent logits.
+- The final formal default keeps extent enabled, sets `bbox_weight: 0.0`, uses `ce_weight: 5.5`, `ctrl_weight: 9.0`, `sample_weight: 6.0`, `endpoint_weight: 9.0`, `curve_distance_weight: 7.5`, `giou_weight: 0.15`, `one_to_many_weight: 1.0`, and `distinct_weight: 4.0`.
 
 ## RGB Training Input
 
@@ -677,8 +681,7 @@ Status:
 
 - Runtime support is in place.
 - The short formal search run chose `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2` for the first production launch.
-- Hyperparameter search should now use the dedicated 50-epoch override [configs/parametric_edge/formal_bsds_hparam_search_50ep.yaml](../configs/parametric_edge/formal_bsds_hparam_search_50ep.yaml).
-- The current 50-epoch search override lowers LR into the requested range, using `lr: 5e-5` and `backbone_lr: 5e-6` with a 5-epoch warmup.
+- The temporary 50-epoch search overrides have been removed after folding the selected setting into the default config.
 
 Measured on 2026-03-14 with `configs/parametric_edge/default.yaml`:
 

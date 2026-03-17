@@ -114,7 +114,8 @@ def main() -> None:
         auto_insert_metric_name=False,
     )
     visualizer = ParametricEdgeVisualizer(
-        every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
+        val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
+        train_every_n_steps=int(config['callbacks'].get('visualization_every_n_train_steps', 0)),
         max_score_curves=int(config['callbacks'].get('visualization_max_curves', 24)),
         score_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.3)),
     )

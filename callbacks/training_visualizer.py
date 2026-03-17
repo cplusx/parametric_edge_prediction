@@ -9,14 +9,22 @@ from models.matcher import hungarian_curve_matching
 
 
 class ParametricEdgeVisualizer(pl.Callback):
-    def __init__(self, every_n_epochs: int = 1, max_score_curves: int = 24, score_threshold: float = 0.3) -> None:
+    def __init__(
+        self,
+        val_every_n_epochs: int = 1,
+        train_every_n_steps: int = 0,
+        max_score_curves: int = 24,
+        score_threshold: float = 0.3,
+    ) -> None:
         super().__init__()
-        self.every_n_epochs = every_n_epochs
+        self.val_every_n_epochs = val_every_n_epochs
+        self.train_every_n_steps = train_every_n_steps
         self.max_score_curves = max_score_curves
         self.score_threshold = score_threshold
+        self.train_batches_seen = 0
 
     @staticmethod
-    def _wandb_log_image(trainer, key: str, image_path: Path, caption: str) -> None:
+    def _wandb_log_image(trainer, key: str, image_path: Path, caption: str, global_step: int, epoch: int) -> None:
         image_path = Path(image_path)
         if not image_path.exists():
             return
@@ -31,22 +39,23 @@ class ParametricEdgeVisualizer(pl.Callback):
 
             logger.experiment.log({
                 key: wandb.Image(str(image_path), caption=caption),
-                'trainer/current_epoch': trainer.current_epoch,
+                'trainer/current_epoch': epoch,
+                'trainer/global_step': global_step,
             })
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
-        if trainer.sanity_checking:
-            return
-        if batch_idx != 0:
-            return
-        if trainer.current_epoch % self.every_n_epochs != 0:
-            return
+    def _predict_curves(self, pl_module, batch):
+        was_training = pl_module.training
+        pl_module.eval()
         with torch.no_grad():
             predictions = pl_module(batch['images'], targets=batch['targets'])
+        if was_training:
+            pl_module.train()
+
         probs = predictions['pred_logits'].softmax(-1)[..., 0]
         scored_curves: List[torch.Tensor] = []
         for pred_curves, pred_keep in zip(predictions['pred_curves'], probs > self.score_threshold):
             scored_curves.append(pred_curves[pred_keep][: self.max_score_curves])
+
         matched_indices = hungarian_curve_matching(
             predictions['pred_logits'],
             predictions['pred_curves'],
@@ -62,10 +71,51 @@ class ParametricEdgeVisualizer(pl.Callback):
         matched_curves: List[torch.Tensor] = []
         for batch_id, (src_idx, _) in enumerate(matched_indices):
             matched_curves.append(predictions['pred_curves'][batch_id, src_idx])
+        return scored_curves, matched_curves
+
+    def _render_batch(self, trainer, batch, scored_curves, matched_curves, split: str, token: str) -> None:
         vis_dir = Path(trainer.default_root_dir) / 'visualizations'
-        score_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_scores.jpg'
-        matched_path = vis_dir / f'epoch_{trainer.current_epoch:03d}_matched.jpg'
+        score_path = vis_dir / f'{split}_{token}_scores.jpg'
+        matched_path = vis_dir / f'{split}_{token}_matched.jpg'
         render_curve_grid(batch['images'], batch['targets'], scored_curves, score_path)
         render_curve_grid(batch['images'], batch['targets'], matched_curves, matched_path)
-        self._wandb_log_image(trainer, 'visualizations/scored_curves', score_path, f'epoch={trainer.current_epoch}')
-        self._wandb_log_image(trainer, 'visualizations/matched_curves', matched_path, f'epoch={trainer.current_epoch}')
+        caption = f'{split}:{token}'
+        self._wandb_log_image(
+            trainer,
+            f'visualizations/{split}_scored_curves',
+            score_path,
+            caption,
+            global_step=trainer.global_step,
+            epoch=trainer.current_epoch,
+        )
+        self._wandb_log_image(
+            trainer,
+            f'visualizations/{split}_matched_curves',
+            matched_path,
+            caption,
+            global_step=trainer.global_step,
+            epoch=trainer.current_epoch,
+        )
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if trainer.sanity_checking or not trainer.is_global_zero:
+            return
+        if self.train_every_n_steps <= 0:
+            return
+        self.train_batches_seen += 1
+        if self.train_batches_seen % self.train_every_n_steps != 0:
+            return
+        scored_curves, matched_curves = self._predict_curves(pl_module, batch)
+        self._render_batch(trainer, batch, scored_curves, matched_curves, 'train', f'step_{self.train_batches_seen:07d}')
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        if trainer.sanity_checking or not trainer.is_global_zero:
+            return
+        if batch_idx != 0:
+            return
+        if self.val_every_n_epochs <= 0:
+            return
+        if trainer.current_epoch % self.val_every_n_epochs != 0:
+            return
+        scored_curves, matched_curves = self._predict_curves(pl_module, batch)
+        self._render_batch(trainer, batch, scored_curves, matched_curves, 'val', f'epoch_{trainer.current_epoch:03d}')
