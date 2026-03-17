@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from models.losses.matched import MatchedCurveLoss
-from models.losses.regularizers import CountLoss, DenoisingLoss, DistinctQueryLoss, OneToManyLoss, PositiveObjectLoss, TopKPositiveLoss
+from models.losses.regularizers import DenoisingLoss, DistinctQueryLoss, OneToManyLoss, PositiveObjectLoss, TopKPositiveLoss
 from models.matcher import hungarian_curve_matching
 
 
@@ -12,7 +12,6 @@ class ParametricEdgeLossComputer:
         self.positive_object_loss = PositiveObjectLoss(config)
         self.one_to_many_loss = OneToManyLoss(config, self.matched_curve_loss, self.positive_object_loss)
         self.topk_positive_loss = TopKPositiveLoss(config, self.matched_curve_loss)
-        self.count_loss = CountLoss(config)
         self.distinct_query_loss = DistinctQueryLoss(config)
         self.denoising_loss = DenoisingLoss(config)
 
@@ -23,13 +22,12 @@ class ParametricEdgeLossComputer:
             curves=outputs['pred_curves'],
             targets=targets,
             control_cost=float(loss_cfg.get('control_cost', 5.0)),
-            sample_cost=0.0,
+            sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
             box_cost=float(loss_cfg.get('box_cost', 1.0)),
             giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
             curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
             num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-            active_counts=outputs.get('pred_active_counts'),
         )
         base = self.matched_curve_loss(outputs['pred_curves'], outputs['pred_logits'], targets, indices, outputs)
         total = base['loss_total']
@@ -42,13 +40,12 @@ class ParametricEdgeLossComputer:
                 curves=aux['pred_curves'],
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                sample_cost=0.0,
+                sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
                 box_cost=float(loss_cfg.get('box_cost', 1.0)),
                 giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                active_counts=aux.get('pred_active_counts'),
             )
             aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
             total = total + aux_weight * aux_losses['loss_total']
@@ -63,10 +60,6 @@ class ParametricEdgeLossComputer:
         total = total + float(loss_cfg.get('topk_positive_weight', 0.0)) * topk['loss_topk_pos']
         for key, value in topk.items():
             log_values[key] = value.detach()
-
-        loss_count = self.count_loss(outputs, targets)
-        total = total + float(loss_cfg.get('count_weight', 0.0)) * loss_count
-        log_values['loss_count'] = loss_count.detach()
 
         loss_distinct = self.distinct_query_loss(outputs, targets)
         total = total + float(loss_cfg.get('distinct_weight', 0.0)) * loss_distinct

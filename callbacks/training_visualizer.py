@@ -52,13 +52,12 @@ class ParametricEdgeVisualizer(pl.Callback):
             predictions['pred_curves'],
             batch['targets'],
             control_cost=float(pl_module.config['loss'].get('control_cost', 5.0)),
-            sample_cost=0.0,
+            sample_cost=float(pl_module.config['loss'].get('sample_cost', 2.0)),
             box_cost=float(pl_module.config['loss'].get('box_cost', 1.0)),
             giou_cost=float(pl_module.config['loss'].get('giou_cost', 1.0)),
             curve_distance_cost=float(pl_module.config['loss'].get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(pl_module.config['loss'].get('curve_match_point_count', 4)),
             num_curve_samples=int(pl_module.config['loss'].get('num_curve_samples', 16)),
-            active_counts=predictions.get('pred_active_counts'),
         )
         matched_curves: List[torch.Tensor] = []
         for batch_id, (src_idx, _) in enumerate(matched_indices):

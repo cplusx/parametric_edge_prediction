@@ -194,6 +194,10 @@ class ParametricDETR(nn.Module):
             1,
             int(config['loss'].get('group_detr_num_groups', 1)) if self.group_addback_enabled else 1,
         )
+        if self.query_source not in {'two_stage', 'learned'}:
+            raise ValueError(f'Unsupported query_source: {self.query_source}')
+        if self.curve_parameterization not in {'endpoint_offsets', 'full_offsets', 'anchor_delta'}:
+            raise ValueError(f'Unsupported curve_parameterization: {self.curve_parameterization}')
 
         self.backbone = DINOv2PyramidBackbone(config)
         self.encoder = nn.TransformerEncoder(
@@ -323,6 +327,9 @@ class ParametricDETR(nn.Module):
         batch_size: int,
         targets: Optional[List[dict]],
     ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        if self.query_source == 'learned':
+            return self._build_learned_queries(batch_size, targets)
+
         proposal_logits = self.proposal_score_head(memory).squeeze(-1)
         proposal_ref = torch.sigmoid(inverse_sigmoid(memory_coords.unsqueeze(0).expand(batch_size, -1, -1)) + self.proposal_ref_head(memory))
         proposal_curve_base = proposal_ref.unsqueeze(2).expand(-1, -1, self.num_control_points, -1).reshape(batch_size, -1, self.curve_dim)
@@ -352,6 +359,18 @@ class ParametricDETR(nn.Module):
             group_contents.append(query_content)
             group_anchors.append(query_anchor)
         return torch.cat(group_contents, dim=1), torch.cat(group_anchors, dim=1), group_count
+
+    def _build_learned_queries(
+        self,
+        batch_size: int,
+        targets: Optional[List[dict]],
+    ) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        group_count = self._active_group_count(targets)
+        total_queries = group_count * self.num_queries
+        query_content = self.query_content_embed.weight[:total_queries].unsqueeze(0).expand(batch_size, -1, -1)
+        query_anchor = self.learned_query_curve_anchors.weight[:total_queries].sigmoid()
+        query_anchor = query_anchor.reshape(1, total_queries, self.num_control_points, 2).expand(batch_size, -1, -1, -1)
+        return query_content, query_anchor, group_count
 
     def _build_group_self_attn_mask(self, dn_count: int, group_count: int, device: torch.device) -> Optional[torch.Tensor]:
         if group_count <= 1:
@@ -401,7 +420,7 @@ class ParametricDETR(nn.Module):
         extent_logits = self.curve_extent_head(hidden).squeeze(-1)
         extent_scale = self.curve_extent_min + (self.curve_extent_max - self.curve_extent_min) * torch.sigmoid(extent_logits)
         anchor_logits = inverse_sigmoid(curve_anchor.reshape(hidden.shape[0], hidden.shape[1], self.curve_dim))
-        curves = torch.sigmoid(anchor_logits + curve_raw).reshape(hidden.shape[0], hidden.shape[1], self.num_control_points, 2)
+        curves = torch.sigmoid(anchor_logits + self._curve_delta_logits(curve_raw)).reshape(hidden.shape[0], hidden.shape[1], self.num_control_points, 2)
 
         main_logits = logits[:, dn_count:]
         main_curves = curves[:, dn_count:]
@@ -432,8 +451,6 @@ class ParametricDETR(nn.Module):
             'group_pred_curve_anchors': grouped_anchors,
             'pred_group_count': query_group_count,
             'pred_queries_per_group': self.num_queries,
-            'pred_active_counts': None,
-            'pred_count_ratio': None,
         }
         if dn_count > 0:
             output['dn_pred_logits'] = logits[:, :dn_count]
@@ -441,6 +458,16 @@ class ParametricDETR(nn.Module):
             output['dn_pred_curve_extent'] = extent_scale[:, :dn_count]
             output['dn_pred_curve_anchors'] = curve_anchor[:, :dn_count]
         return output
+
+    def _curve_delta_logits(self, curve_raw: torch.Tensor) -> torch.Tensor:
+        raw_points = curve_raw.reshape(curve_raw.shape[0], curve_raw.shape[1], self.num_control_points, 2)
+        if self.curve_parameterization in {'full_offsets', 'anchor_delta'}:
+            scale = torch.full_like(raw_points, self.curve_delta_scale)
+        else:
+            scale = torch.full_like(raw_points, self.curve_delta_scale * self.interior_delta_ratio)
+            scale[:, :, 0] = self.curve_delta_scale
+            scale[:, :, -1] = self.curve_delta_scale
+        return (raw_points * scale).reshape(curve_raw.shape[0], curve_raw.shape[1], self.curve_dim)
 
     def forward(self, images: torch.Tensor, targets: Optional[List[dict]] = None) -> Dict[str, torch.Tensor]:
         feats = self.backbone(images)

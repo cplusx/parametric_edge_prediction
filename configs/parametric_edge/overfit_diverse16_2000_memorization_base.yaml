@@ -113,7 +113,6 @@ loss:
   distinct_weight: 0.0
   distinct_topk: 32
   distinct_spatial_sigma: 0.12
-  count_weight: 0.0
 
 optimizer:
   lr: 0.00005

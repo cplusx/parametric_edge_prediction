@@ -91,7 +91,7 @@ class TopKPositiveLoss(BaseLossComponent):
                     tgt_curves=tgt_curves,
                     tgt_boxes=tgt_boxes,
                     control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                    sample_cost=0.0,
+                    sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
                     box_cost=float(loss_cfg.get('box_cost', 1.0)),
                     giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                     curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
@@ -141,6 +141,7 @@ class TopKPositiveLoss(BaseLossComponent):
                 'loss_topk_pos': zero,
                 'loss_topk_pos_ce': zero,
                 'loss_topk_pos_ctrl': zero,
+                'loss_topk_pos_sample': zero,
                 'loss_topk_pos_endpoint': zero,
                 'loss_topk_pos_bbox': zero,
                 'loss_topk_pos_giou': zero,
@@ -177,6 +178,7 @@ class TopKPositiveLoss(BaseLossComponent):
                 'loss_topk_pos': zero,
                 'loss_topk_pos_ce': zero,
                 'loss_topk_pos_ctrl': zero,
+                'loss_topk_pos_sample': zero,
                 'loss_topk_pos_endpoint': zero,
                 'loss_topk_pos_bbox': zero,
                 'loss_topk_pos_giou': zero,
@@ -188,6 +190,7 @@ class TopKPositiveLoss(BaseLossComponent):
             'loss_topk_pos': torch.stack([summary['loss_total'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_ce': torch.stack([summary['loss_ce'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_ctrl': torch.stack([summary['loss_ctrl'] for summary in layer_summaries]).mean(),
+            'loss_topk_pos_sample': torch.stack([summary['loss_sample'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_endpoint': torch.stack([summary['loss_endpoint'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_bbox': torch.stack([summary['loss_bbox'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_giou': torch.stack([summary['loss_giou'] for summary in layer_summaries]).mean(),
@@ -220,27 +223,12 @@ class DenoisingLoss(BaseLossComponent):
         return {'loss_dn': total, 'loss_dn_ce': loss_ce, 'loss_dn_curve': loss_curve}
 
 
-class CountLoss(BaseLossComponent):
-    def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[dict]) -> torch.Tensor:
-        pred_ratio = outputs.get('pred_count_ratio')
-        if pred_ratio is None:
-            return outputs['pred_logits'].sum() * 0.0
-        max_q = max(1, int(self.config['model'].get('count_max_queries', self.config['model'].get('active_query_topk', outputs['pred_logits'].shape[1]))))
-        target_counts = torch.tensor(
-            [min(max_q, int(target['num_targets'])) / float(max_q) for target in targets],
-            device=pred_ratio.device,
-            dtype=pred_ratio.dtype,
-        )
-        return F.l1_loss(pred_ratio, target_counts)
-
-
 class DistinctQueryLoss(BaseLossComponent):
     def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[dict]) -> torch.Tensor:
         grouped_hidden = outputs.get('group_pred_query_hidden')
         grouped_refs = outputs.get('group_pred_ref_points')
         grouped_logits = outputs.get('group_pred_logits')
         grouped_curves = outputs.get('group_pred_curves')
-        active_counts = outputs.get('pred_active_counts')
         if grouped_hidden is None or grouped_refs is None or grouped_logits is None or grouped_curves is None:
             hidden = outputs.get('pred_query_hidden')
             ref_points = outputs.get('pred_ref_points')
@@ -265,7 +253,7 @@ class DistinctQueryLoss(BaseLossComponent):
                 continue
             for group_idx in range(grouped_hidden.shape[1]):
                 max_queries = grouped_hidden.shape[2]
-                limit = max_queries if active_counts is None else int(active_counts[batch_idx].item())
+                limit = max_queries
                 if limit <= 1:
                     continue
                 limit = min(limit, max_queries, topk)
@@ -281,7 +269,7 @@ class DistinctQueryLoss(BaseLossComponent):
                     tgt_curves=tgt_curves,
                     tgt_boxes=tgt_boxes,
                     control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                    sample_cost=0.0,
+                    sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
                     box_cost=float(loss_cfg.get('box_cost', 1.0)),
                     giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                     curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
@@ -320,6 +308,7 @@ class OneToManyLoss(BaseLossComponent):
                 'loss_om_total': zero,
                 'loss_om_ce': zero,
                 'loss_om_ctrl': zero,
+                'loss_om_sample': zero,
                 'loss_om_endpoint': zero,
                 'loss_om_bbox': zero,
                 'loss_om_giou': zero,
@@ -327,6 +316,16 @@ class OneToManyLoss(BaseLossComponent):
                 'loss_om_extent': zero,
             }
         loss_cfg = self.config['loss']
+        om_weight_overrides = {
+            'ce_weight': float(loss_cfg.get('one_to_many_ce_weight', loss_cfg.get('ce_weight', 1.0))),
+            'ctrl_weight': float(loss_cfg.get('one_to_many_ctrl_weight', loss_cfg.get('ctrl_weight', 5.0))),
+            'sample_weight': float(loss_cfg.get('one_to_many_sample_weight', loss_cfg.get('sample_weight', 0.0))),
+            'endpoint_weight': float(loss_cfg.get('one_to_many_endpoint_weight', loss_cfg.get('endpoint_weight', 2.0))),
+            'bbox_weight': float(loss_cfg.get('one_to_many_bbox_weight', loss_cfg.get('bbox_weight', 2.0))),
+            'giou_weight': float(loss_cfg.get('one_to_many_giou_weight', loss_cfg.get('giou_weight', 1.0))),
+            'curve_distance_weight': float(loss_cfg.get('one_to_many_curve_distance_weight', loss_cfg.get('curve_distance_weight', 2.0))),
+            'extent_weight': float(loss_cfg.get('one_to_many_extent_weight', loss_cfg.get('extent_weight', 0.0))),
+        }
         group_summaries = []
         for group_idx in range(1, grouped_logits.shape[1]):
             group_indices = hungarian_curve_matching(
@@ -334,13 +333,12 @@ class OneToManyLoss(BaseLossComponent):
                 curves=grouped_curves[:, group_idx],
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                sample_cost=0.0,
+                sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
                 box_cost=float(loss_cfg.get('box_cost', 1.0)),
                 giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                active_counts=outputs.get('pred_active_counts'),
             )
             group_outputs = {
                 'pred_curve_extent': None if outputs.get('group_pred_curve_extent') is None else outputs['group_pred_curve_extent'][:, group_idx],
@@ -352,6 +350,7 @@ class OneToManyLoss(BaseLossComponent):
                     targets,
                     group_indices,
                     group_outputs,
+                    loss_weight_overrides=om_weight_overrides,
                 )
             )
 
@@ -360,6 +359,7 @@ class OneToManyLoss(BaseLossComponent):
             'loss_om_total': total,
             'loss_om_ce': torch.stack([summary['loss_ce'] for summary in group_summaries]).mean(),
             'loss_om_ctrl': torch.stack([summary['loss_ctrl'] for summary in group_summaries]).mean(),
+            'loss_om_sample': torch.stack([summary['loss_sample'] for summary in group_summaries]).mean(),
             'loss_om_endpoint': torch.stack([summary['loss_endpoint'] for summary in group_summaries]).mean(),
             'loss_om_bbox': torch.stack([summary['loss_bbox'] for summary in group_summaries]).mean(),
             'loss_om_giou': torch.stack([summary['loss_giou'] for summary in group_summaries]).mean(),

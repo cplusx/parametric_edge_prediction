@@ -55,8 +55,10 @@ class MatchedCurveLoss(BaseLossComponent):
         runtime_outputs: Dict[str, torch.Tensor],
         match_weights: Optional[List[torch.Tensor]] = None,
         query_weights: Optional[torch.Tensor] = None,
+        loss_weight_overrides: Optional[Dict[str, float]] = None,
     ) -> Dict[str, torch.Tensor]:
         loss_cfg = self.config['loss']
+        weight_cfg = loss_cfg if loss_weight_overrides is None else {**loss_cfg, **loss_weight_overrides}
         device = pred_logits.device
         target_classes = torch.full(pred_logits.shape[:2], 1, dtype=torch.long, device=device)
         matched_pred_curves = []
@@ -144,18 +146,20 @@ class MatchedCurveLoss(BaseLossComponent):
             loss_curve_length = zero
             loss_extent = zero
         total = (
-            float(loss_cfg.get('ce_weight', 1.0)) * loss_ce
-            + float(loss_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
-            + float(loss_cfg.get('endpoint_weight', 2.0)) * loss_endpoint
-            + float(loss_cfg.get('bbox_weight', 2.0)) * loss_bbox
-            + float(loss_cfg.get('giou_weight', 1.0)) * loss_giou
-            + float(loss_cfg.get('curve_distance_weight', 2.0)) * loss_curve_dist
-            + float(loss_cfg.get('extent_weight', 0.0)) * loss_extent
+            float(weight_cfg.get('ce_weight', 1.0)) * loss_ce
+            + float(weight_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
+            + float(weight_cfg.get('sample_weight', 0.0)) * loss_curve_chamfer
+            + float(weight_cfg.get('endpoint_weight', 2.0)) * loss_endpoint
+            + float(weight_cfg.get('bbox_weight', 2.0)) * loss_bbox
+            + float(weight_cfg.get('giou_weight', 1.0)) * loss_giou
+            + float(weight_cfg.get('curve_distance_weight', 2.0)) * loss_curve_dist
+            + float(weight_cfg.get('extent_weight', 0.0)) * loss_extent
         )
         return {
             'loss_total': total,
             'loss_ce': loss_ce,
             'loss_ctrl': loss_ctrl,
+            'loss_sample': loss_curve_chamfer,
             'loss_endpoint': loss_endpoint,
             'loss_bbox': loss_bbox,
             'loss_giou': loss_giou,

@@ -60,7 +60,7 @@ def main():
                 outputs['pred_curves'],
                 targets,
                 control_cost=float(cfg['loss'].get('control_cost', 5.0)),
-                sample_cost=0.0,
+                sample_cost=float(cfg['loss'].get('sample_cost', 2.0)),
                 box_cost=float(cfg['loss'].get('box_cost', 1.0)),
                 giou_cost=float(cfg['loss'].get('giou_cost', 1.0)),
                 curve_distance_cost=float(cfg['loss'].get('curve_distance_cost', 1.0)),

@@ -103,7 +103,6 @@ loss:
   distinct_spatial_sigma: 0.12
   group_detr_active_group_policy: max
   group_detr_min_active_groups: 2
-  count_weight: 0.0
 
 optimizer:
   lr: 0.0001
