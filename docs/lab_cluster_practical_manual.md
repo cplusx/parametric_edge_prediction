@@ -142,7 +142,7 @@ Project-specific policy:
 - debug with short `sbatch` probes instead of interactive `srun`
 - keep launch logic in committed repo configs; do not add wrapper submit scripts for this repo
 - if training settings change, edit the repo config locally, commit it, and let the cluster pull it
-- keep temporary cluster task files under `cluster_tasks/` inside the repo and ignore that directory in Git
+- keep temporary cluster task files and their outputs on the cluster checkout only; do not add a local tracked placeholder for them in the repo
 - keep cluster-only files limited to temporary batch scripts, logs, and runtime output directories
 
 ## 7. Writing reliable batch jobs
@@ -266,8 +266,8 @@ Do **not** delete:
 ## 13. Repo-Specific Notes For Parametric Edge
 
 - Do not put hardware names like `h100` or `a40` into run names. Use model/data/batch semantics only.
-- For this repo, temporary cluster task files belong under `cluster_tasks/` in the repo root, not under a separate external folder.
-- LAION dataset discovery now supports a text entry cache under the LAION data root. If the cache file exists, reuse it; if it does not, create it once at startup.
+- If you need temporary `sbatch` files for this repo, keep them on the cluster checkout only, for example under `~/parametric_edge_prediction/cluster_tasks/`, and do not commit or mirror them locally.
+- LAION dataset discovery uses a text entry cache at `laion_entry_cache.txt` under the LAION data root. If the cache file exists, reuse it; if it does not, create it once at startup.
 
 ## 14. Lessons From 2026-03-18
 
@@ -282,7 +282,7 @@ Correct workflow:
 
 - Check `sinfo -N` or `scontrol show node` before choosing `--gres`, `-c`, and `--mem`.
 - Distinguish scheduling failures from startup failures with `squeue`, `sacct`, `.out`, and `.err` before changing resources.
-- Submit training with plain `sbatch`; if a temporary script is needed, place it in `cluster_tasks/` and keep it out of Git.
+- Submit training with plain `sbatch`; if a temporary script is needed, keep it only on the cluster checkout and keep it out of Git.
 - In batch jobs, use `set +u`, then `source .../conda.sh`, then `conda activate ...`, then restore `set -u`.
 - Use `srun --jobid ... --overlap` only as an attached monitoring step for a running allocation, not as the main launch path.
 - Use `tmux` first.

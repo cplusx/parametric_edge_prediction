@@ -142,7 +142,7 @@ Runtime rule:
 - Change training/data settings in the committed config file first.
 - Do not introduce a local wrapper submit script for this repo.
 - Use plain `sbatch` scripts or inline `sbatch <<'EOF' ... EOF` directly on cluster.
-- If a temporary batch file is needed, place it under `cluster_tasks/` in the repo root and keep it ignored by Git.
+- If a temporary batch file is needed, keep it on the cluster checkout only and do not commit it.
 - Do not generate cluster-only data/training overrides unless they are explicitly required for log/output paths.
 - Current cluster pretraining uses full FP32, not mixed precision.
 - Current primary FP32 cluster profile uses `batch_size: 16`, `accumulate_grad_batches: 4`, `num_queries: 512`, and `hidden_dim: 320` on 4 GPUs.
@@ -150,14 +150,7 @@ Runtime rule:
 - LAION cluster runs log to the dedicated W&B project `laion_parametric_edge_prediction`, not the BSDS/default project.
 - For `gbunchQ`, use `3-00:00:00` by default; for other partitions, use that partition's actual maximum time explicitly in the `sbatch` header.
 - Future run names should omit hardware labels and keep only experiment semantics.
-- LAION sample discovery now writes a `txt` entry cache under the LAION data root and reuses it on later starts.
-
-## 2026-03-18 Daily Summary
-
-- Removed the repo-local cluster submit wrapper and switched the repo policy back to direct `sbatch` only.
-- Fixed LAION cluster training rollout: verified real node resources, corrected the batch-shell conda activation, and launched the 4-GPU cluster run successfully.
-- Added LAION entry-list text caching so startup no longer needs to rescan the whole dataset tree on every run.
-- Standardized the repo policy that temporary cluster task files live under `cluster_tasks/` and stay ignored by Git.
+- LAION sample discovery now writes `laion_entry_cache.txt` under the LAION data root and reuses it on later starts.
 
 Important reset on 2026-03-14:
 

@@ -218,5 +218,3 @@ edge_data/
 .DS_Store
 edge_data
 wandb
-cluster_tasks/*
-!cluster_tasks/.gitkeep
