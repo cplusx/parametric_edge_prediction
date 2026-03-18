@@ -140,7 +140,7 @@ ${SBATCH_ARGS[*]}
 set -euo pipefail
 set +u
 source "\$HOME/anaconda3/etc/profile.d/conda.sh"
-conda activate ${CONDA_ENV}
+source activate ${CONDA_ENV}
 set -u
 export PYTHONUNBUFFERED=1
 cd ${REPO_ROOT}
