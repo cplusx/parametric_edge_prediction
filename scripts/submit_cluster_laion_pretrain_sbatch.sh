@@ -16,8 +16,9 @@ NUM_QUERIES=640
 EFFECTIVE_BATCH=256
 EFFECTIVE_STEPS_PER_EPOCH=2000
 MAX_EPOCHS=200
-RUN_NAME="laion-cluster-pretrain"
+RUN_NAME="laion-pretrain-q640-eb256-lr5e5"
 CONDA_ENV="diffusers"
+OUTPUT_ROOT="${CLUSTER_OUTPUT_ROOT:-$HOME/cluster_runs/parametric_edge_prediction}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -74,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       RUN_NAME="$2"
       shift 2
       ;;
+    --output-root)
+      OUTPUT_ROOT="$2"
+      shift 2
+      ;;
     --conda-env)
       CONDA_ENV="$2"
       shift 2
@@ -108,7 +113,13 @@ if [[ -z "$MEMORY" ]]; then
 fi
 
 SUBMIT_TOKEN="${RUN_NAME}-$(date +%Y%m%d-%H%M%S)-${GPUS}gpu"
-SUBMIT_DIR="$REPO_ROOT/outputs/parametric_edge_training/${SUBMIT_TOKEN}"
+OUTPUT_ROOT="$(python - <<'PY' "$OUTPUT_ROOT"
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).expanduser())
+PY
+)"
+SUBMIT_DIR="$OUTPUT_ROOT/${SUBMIT_TOKEN}"
 mkdir -p "$SUBMIT_DIR"
 SBATCH_FILE="$SUBMIT_DIR/launch.sbatch"
 STDOUT_FILE="$SUBMIT_DIR/slurm-%j.out"
@@ -137,7 +148,6 @@ source "\$HOME/anaconda3/etc/profile.d/conda.sh"
 conda activate ${CONDA_ENV}
 set -u
 export PYTHONUNBUFFERED=1
-export WANDB_MODE=offline
 cd ${REPO_ROOT}
 
 ./scripts/run_cluster_laion_pretrain_interactive.sh \
@@ -150,7 +160,8 @@ cd ${REPO_ROOT}
   --effective-batch ${EFFECTIVE_BATCH} \
   --effective-steps-per-epoch ${EFFECTIVE_STEPS_PER_EPOCH} \
   --max-epochs ${MAX_EPOCHS} \
-  --run-name ${RUN_NAME}
+  --run-name ${RUN_NAME} \
+  --output-root ${OUTPUT_ROOT}
 EOF
 
 chmod +x "$SBATCH_FILE"

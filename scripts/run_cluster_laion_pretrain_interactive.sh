@@ -18,7 +18,8 @@ TEST_SAMPLES=1024
 SELECTION_SEED=20260318
 TRAIN_SELECTION_OFFSET=2048
 PRECISION="16-mixed"
-RUN_NAME="laion-cluster-pretrain"
+RUN_NAME="laion-pretrain-q640-eb256-lr5e5"
+OUTPUT_ROOT="${CLUSTER_OUTPUT_ROOT:-$HOME/cluster_runs/parametric_edge_prediction}"
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
@@ -63,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       RUN_NAME="$2"
       shift 2
       ;;
+    --output-root)
+      OUTPUT_ROOT="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -86,11 +91,25 @@ if (( EFFECTIVE_BATCH % GLOBAL_MICRO_BATCH != 0 )); then
 fi
 ACCUMULATE=$(( EFFECTIVE_BATCH / GLOBAL_MICRO_BATCH ))
 RUN_TOKEN="${RUN_NAME}-$(date +%Y%m%d-%H%M%S)-${GPUS}gpu"
-OUTPUT_DIR="$REPO_ROOT/outputs/parametric_edge_training/${RUN_TOKEN}"
+OUTPUT_ROOT="$(python - <<'PY' "$OUTPUT_ROOT"
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).expanduser())
+PY
+)"
+OUTPUT_DIR="$OUTPUT_ROOT/${RUN_TOKEN}"
 CONFIG_PATH="$OUTPUT_DIR/resolved_cluster_config.yaml"
 mkdir -p "$OUTPUT_DIR"
 
 LAION_ROOT="${LAION_ROOT:-$HOME/laion/edge_detection}"
+LAION_IMAGE_ROOT="${LAION_IMAGE_ROOT:-}"
+if [[ -z "$LAION_IMAGE_ROOT" ]]; then
+  if [[ -d "$LAION_ROOT/edge_detection" ]]; then
+    LAION_IMAGE_ROOT="$LAION_ROOT/edge_detection"
+  else
+    LAION_IMAGE_ROOT="$LAION_ROOT"
+  fi
+fi
 LAION_CACHE_ROOT="$LAION_ROOT/laion_edge_v2_bezier_cache_fast"
 LAION_EDGE_ROOT="$LAION_ROOT/laion_edge_v2"
 
@@ -103,7 +122,7 @@ data:
   extra_train_datasets:
     - dataset_type: laion_synthetic
       data_root: ${LAION_ROOT}
-      image_root: ${LAION_ROOT}
+      image_root: ${LAION_IMAGE_ROOT}
       edge_root: ${LAION_EDGE_ROOT}
       cache_root: ${LAION_CACHE_ROOT}
       batch_glob: batch*
@@ -113,7 +132,7 @@ data:
   val_dataset:
     dataset_type: laion_synthetic
     data_root: ${LAION_ROOT}
-    image_root: ${LAION_ROOT}
+    image_root: ${LAION_IMAGE_ROOT}
     edge_root: ${LAION_EDGE_ROOT}
     cache_root: ${LAION_CACHE_ROOT}
     batch_glob: batch*
@@ -124,7 +143,7 @@ data:
   test_dataset:
     dataset_type: laion_synthetic
     data_root: ${LAION_ROOT}
-    image_root: ${LAION_ROOT}
+    image_root: ${LAION_IMAGE_ROOT}
     edge_root: ${LAION_EDGE_ROOT}
     cache_root: ${LAION_CACHE_ROOT}
     batch_glob: batch*
@@ -169,6 +188,9 @@ EOF
 
 echo "Resolved config written to: $CONFIG_PATH"
 echo "GPUs=${GPUS} per_device_batch=${PER_DEVICE_BATCH} accumulate=${ACCUMULATE} effective_batch=${EFFECTIVE_BATCH}"
+echo "LAION_ROOT=${LAION_ROOT}"
+echo "LAION_IMAGE_ROOT=${LAION_IMAGE_ROOT}"
+echo "OUTPUT_DIR=${OUTPUT_DIR}"
 
 TRAIN_CMD=(python train.py --config configs/parametric_edge/default.yaml --override-config "$CONFIG_PATH")
 
