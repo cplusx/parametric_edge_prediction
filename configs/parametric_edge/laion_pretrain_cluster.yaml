@@ -140,7 +140,7 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-4gpu-q512-eb256-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: 4
@@ -171,7 +171,7 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
+    name: laion-pretrain-4gpu-q512-eb256-lr5e5-fp32
     group: laion-cluster-pretrain
     job_type: train
     tags:
@@ -182,4 +182,4 @@ logging:
       - effective-batch-256
       - lr5e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-4gpu-q512-eb256-lr5e5-fp32/wandb
