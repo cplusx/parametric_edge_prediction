@@ -206,7 +206,7 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             test_paths = chosen_paths
 
         common = dict(
-            cache_root=Path(data_cfg['cache_dir']),
+            cache_root=Path(data_cfg.get('cache_dir', '.')),
             image_size=int(data_cfg['image_size']),
             version_name=data_cfg.get('target_version', 'v5_anchor_consistent'),
             rgb_input=bool(data_cfg.get('rgb_input', False)),

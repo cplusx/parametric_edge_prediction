@@ -1,0 +1,69 @@
+data:
+  cache_dir: edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent
+  overfit_num_samples: 1
+  sample_names:
+    - 141048_ann1.png
+  image_size: 256
+  batch_size: 1
+  val_batch_size: 1
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  max_targets: 32
+  train_augment: false
+  augment:
+    resize_scale_range: [1.0, 1.0]
+    affine_scale_range: [1.0, 1.0]
+    affine_max_rotate_deg: 0.0
+    affine_max_translate_ratio: 0.0
+    hflip_prob: 0.0
+    vflip_prob: 0.0
+  limit_samples: null
+
+model:
+  num_queries: 32
+  hidden_dim: 192
+  dim_feedforward: 512
+  num_encoder_layers: 1
+  num_decoder_layers: 3
+  num_feature_levels: 4
+  dn_num_groups: 2
+  dn_noise_scale: 0.04
+  backbone_name: vit_small_patch14_dinov2
+  backbone_pretrained: true
+
+loss:
+  class_loss_type: focal
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  aux_weight: 0.5
+  dn_weight: 1.0
+  dn_curve_weight: 5.0
+  group_detr_num_groups: 4
+  one_to_many_weight: 0.2
+  topk_positive_enabled: false
+  topk_positive_per_gt: 2
+  topk_positive_layer_k: [2, 2, 2, 2, 2]
+  topk_positive_weight: 0.1
+  distinct_weight: 0.05
+
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0
+  lr_step_size: 200
+  lr_gamma: 0.5
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_rgb_dinov2_141048_ann1
+  max_epochs: 80
+  accelerator: cpu
+  devices: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  overfit_batches: 0.0
+  gradient_clip_val: 0.1
+
+callbacks:
+  visualization_every_n_epochs: 10
+  visualization_score_threshold: 0.2
+  visualization_max_curves: 32

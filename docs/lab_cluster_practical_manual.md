@@ -131,25 +131,18 @@ conda activate base
 
 Do not rely on a shell alias or PATH being present inside the compute node.
 
-## 6. Interactive vs batch
+## 6. Batch-first workflow for this repo
 
-Use **interactive SLURM** when:
+For `parametric_edge_prediction`, use **`sbatch` only**.
 
-- you want to debug manually
-- you want to inspect the environment live
-- you are still figuring out memory/time requirements
+Do not use `srun` for this repository's training workflow.
 
-Example:
+Project-specific policy:
 
-```bash
-srun -p gbunchCPU -c 16 --mem=64G -t 04:00:00 --pty bash
-```
-
-Use **batch (`sbatch`)** when:
-
-- the job is stable
-- it may take a long time
-- you do not want to babysit it
+- debug with short `sbatch` probes instead of interactive `srun`
+- keep launch logic in committed repo configs and submit scripts
+- if training settings change, edit the repo config locally, commit it, and let the cluster pull it
+- keep cluster-only files limited to submitted batch scripts, logs, copied base configs, and runtime output directories
 
 ## 7. Writing reliable batch jobs
 

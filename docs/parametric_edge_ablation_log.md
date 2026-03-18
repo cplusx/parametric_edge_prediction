@@ -36,8 +36,15 @@ python train.py --config <base_config.yaml> --override-config <override.yaml>
 Config loading behavior:
 
 - If `--config` points to a non-`default.yaml` file and no override is provided, `configs/parametric_edge/default.yaml` is merged first.
+- If a config sets `_inherit_default: false`, it is treated as a standalone config and is loaded directly without merging `default.yaml`.
 - If `--override-config` is used, the override is merged on top of the config loaded by `--config`.
-- For the add-back suite below, use `overfit_diverse16_2000_memorization_base.yaml` as the base config and the individual add-back file as the override.
+- Historical overfit configs now live under `configs/parametric_edge/archived_overfit/` so the main config directory only contains current training entrypoints.
+- For the add-back suite below, use `archived_overfit/overfit_diverse16_2000_memorization_base.yaml` as the base config and the individual add-back file as the override.
+
+Current cluster LAION pretraining entrypoint:
+
+- Config: [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
+- Submit script: [scripts/submit_cluster_laion_pretrain_sbatch.sh](../scripts/submit_cluster_laion_pretrain_sbatch.sh)
 
 ## Output Conventions
 
@@ -96,6 +103,33 @@ Status:
 - The temporary 50-epoch search configs and search-run artifacts were removed after selecting the final default recipe.
 - The first full formal run should use the default config directly, since the selected setting is now folded into [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml).
 
+## LAION Cluster Pretraining
+
+Purpose:
+
+- Run LAION-only pretraining on the cluster from a committed repo config instead of generating training semantics on the cluster.
+
+Config:
+
+- [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
+
+Current intended command on cluster:
+
+```bash
+./scripts/submit_cluster_laion_pretrain_sbatch.sh \
+  --partition gbunchQ3 \
+  --time 00:20:00 \
+  --gpus 2 \
+  --nodelist fstsvr11 \
+  --run-name laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+```
+
+Runtime rule:
+
+- Change training/data settings in the committed config file first.
+- The submit script may only add per-run output paths and the W&B run name.
+- Do not generate cluster-only data/training overrides.
+
 Important reset on 2026-03-14:
 
 - Older overfit outputs were generated before the current graph-first data pipeline, `loss_main`-based comparison policy, and the eval-padding / XY normalization fixes stabilized.
@@ -111,56 +145,56 @@ Purpose:
 
 Base config:
 
-- [configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml](../configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml)
 
 Add-back overrides:
 
-- [configs/parametric_edge/overfit_diverse16_2000_addback_aux.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_aux.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_dn.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_topk.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_topk.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_aux.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_aux.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_onetomany.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_onetomany.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_topk.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_topk.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_distinct.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_distinct.yaml)
 
 Recommended run commands:
 
 ```bash
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_aux.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_aux.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_onetomany.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_onetomany.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_topk.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_topk.yaml
 
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_distinct.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_distinct.yaml
 ```
 
 Rerun note after DN/query refactor on 2026-03-14:
@@ -168,14 +202,14 @@ Rerun note after DN/query refactor on 2026-03-14:
 - Purpose:
   - Re-test the DN add-back setting after replacing the old DN geometry MLP path with direct noisy curve anchors and a derived 2D deformable-attention reference.
 - Config:
-  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
+  - [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml)
 - Output directory:
   - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix)
 - Command:
 ```bash
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix.yaml
 ```
 - Current conclusion:
   - This refactor regressed early overfit behavior badly.
@@ -190,7 +224,7 @@ Stricter historical DN-only comparison on 2026-03-14:
 - Purpose:
   - Rerun the new curve-anchor/DN implementation with loss weights adjusted to match the historical completed DN-only run as closely as the current code permits.
 - Config:
-  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
+  - [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare.yaml)
 - Output directory:
   - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_curve_anchor_fix_legacy_compare)
 - Current conclusion:
@@ -204,7 +238,7 @@ Proposal-curve main-query rerun on 2026-03-14:
 - Purpose:
   - Replace the bad “single 2D point copied across all control points” main-query initialization with encoder proposals that directly predict full endpoint/control-point anchors, while deriving the deformable 2D reference from the curve anchor through an MLP.
 - Config:
-  - [configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
+  - [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare.yaml)
 - Output directory:
   - [outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare](../outputs/parametric_edge_training/overfit_diverse16_2000_addback_dn_proposal_curve_legacy_compare)
 - Current conclusion:
@@ -237,14 +271,14 @@ Purpose:
 
 Config:
 
-- [configs/parametric_edge/overfit_diverse16_2000_all_except_dn.yaml](../configs/parametric_edge/overfit_diverse16_2000_all_except_dn.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_all_except_dn.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_all_except_dn.yaml)
 
 Recommended run command:
 
 ```bash
 python train.py \
-  --config configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml \
-  --override-config configs/parametric_edge/overfit_diverse16_2000_all_except_dn.yaml
+  --config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml \
+  --override-config configs/parametric_edge/archived_overfit/overfit_diverse16_2000_all_except_dn.yaml
 ```
 
 Monitoring script:
@@ -333,7 +367,7 @@ curve_distance_cost = 6.0
 These selected weights are now reflected in:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
-- [configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml](../configs/parametric_edge/overfit_diverse16_2000_memorization_base.yaml)
+- [configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml](../configs/parametric_edge/archived_overfit/overfit_diverse16_2000_memorization_base.yaml)
 
 Reference summaries for the chosen setting:
 

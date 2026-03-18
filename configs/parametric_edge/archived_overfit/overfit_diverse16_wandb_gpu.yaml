@@ -1,0 +1,61 @@
+data:
+  batch_size: 2
+  val_batch_size: 2
+  overfit_num_samples: 16
+  sample_names:
+    - 43033_ann2.png
+    - 100007_ann1.png
+    - 183066_ann2.png
+    - 33044_ann1.png
+    - 87015_ann5.png
+    - 2018_ann2.png
+    - 36046_ann6.png
+    - 196062_ann3.png
+    - 220003_ann2.png
+    - 159002_ann6.png
+    - 206062_ann5.png
+    - 51084_ann4.png
+    - 147077_ann4.png
+    - 368037_ann3.png
+    - 156054_ann4.png
+    - 134049_ann3.png
+  max_targets: 400
+
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0
+  lr_step_size: 400
+  lr_gamma: 0.5
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_diverse16_wandb_gpu
+  max_epochs: 1000
+  accelerator: gpu
+  devices: 1
+  log_every_n_steps: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  overfit_batches: 0.0
+  gradient_clip_val: 0.1
+  deterministic: false
+
+callbacks:
+  visualization_every_n_epochs: 25
+  visualization_score_threshold: 0.15
+  visualization_max_curves: 128
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: true
+    project: parametric-edge-prediction
+    name: overfit-diverse16-gpu
+    group: overfit
+    job_type: train
+    tags:
+      - overfit
+      - gpu
+      - diverse16
+      - offline
+    save_dir: outputs/parametric_edge_training/overfit_diverse16_wandb_gpu/wandb

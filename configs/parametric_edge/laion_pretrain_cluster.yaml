@@ -1,24 +1,14 @@
+_inherit_default: false
+
 data:
-  train_edge_globs:
-    - edge_data/HED-BSDS/gt_rgb/train/*.png
-    - edge_data/HED-BSDS/gt_rgb/val/*.png
-  val_edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
-  test_edge_glob: edge_data/HED-BSDS/gt_rgb/test/*.png
-  train_input_roots:
-    - edge_data/HED-BSDS/images/train
-    - edge_data/HED-BSDS/images/val
-  val_input_root: edge_data/HED-BSDS/images/test
-  test_input_root: edge_data/HED-BSDS/images/test
-  include_primary_train_dataset: true
+  include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
-  batch_size: 10
-  val_batch_size: 10
-  num_workers: 10
+  batch_size: 32
+  val_batch_size: 32
+  num_workers: 16
   pin_memory: true
   persistent_workers: true
-  cache_dir: edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent
-  target_version: v5_anchor_consistent
   target_degree: 5
   min_curve_length: 3.0
   max_targets: 512
@@ -33,12 +23,44 @@ data:
   limit_samples: null
   overfit_num_samples: null
   sample_names: null
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /home/user/yc47434/laion/edge_detection
+      image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+      edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
+      cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+      batch_glob: batch*
+      quantize: 4
+      selection_seed: 20260318
+      selection_offset: 2048
+  val_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
+    cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+    batch_glob: batch*
+    quantize: 4
+    selection_seed: 20260318
+    selection_offset: 0
+    max_samples: 1024
+  test_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
+    cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+    batch_glob: batch*
+    quantize: 4
+    selection_seed: 20260318
+    selection_offset: 1024
+    max_samples: 1024
 
 model:
   input_channels: 3
   target_degree: 5
   hidden_dim: 384
-  num_queries: 512
+  num_queries: 640
   nheads: 12
   num_encoder_layers: 4
   num_decoder_layers: 6
@@ -109,27 +131,26 @@ loss:
   group_detr_min_active_groups: 2
 
 optimizer:
-  lr: 0.00002
-  backbone_lr: 0.00001
+  lr: 0.00005
+  backbone_lr: 0.000025
   weight_decay: 0.0001
   beta1: 0.9
   beta2: 0.999
   scheduler: multistep
   warmup_epochs: 20
   warmup_start_factor: 0.1
-  lr_milestones: [350, 425]
+  lr_milestones: [140, 180]
   lr_gamma: 0.1
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: outputs/parametric_edge_training/default
-  max_epochs: 500
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+  max_epochs: 200
   accelerator: gpu
   devices: 2
   strategy: ddp_find_unused_parameters_true
   precision: 16-mixed
-  accumulate_grad_batches: 2
-  channels_last: true
+  accumulate_grad_batches: 4
   log_every_n_steps: 10
   gradient_clip_val: 0.1
   deterministic: false
@@ -137,13 +158,14 @@ trainer:
   limit_train_batches: 1.0
   limit_val_batches: 1.0
   overfit_batches: 0.0
-  num_sanity_val_steps: 2
+  num_sanity_val_steps: 0
   check_val_every_n_epoch: 1
+  effective_train_batches_per_epoch: 2000
   run_test_after_fit: false
 
 callbacks:
-  visualization_every_n_epochs: 20
-  visualization_every_n_train_steps: 500
+  visualization_every_n_epochs: 1
+  visualization_every_n_train_steps: 2000
   visualization_score_threshold: 0.3
   visualization_max_curves: 128
 
@@ -153,13 +175,14 @@ logging:
     enabled: true
     offline: false
     project: parametric-edge-prediction
-    name: formal-bsds-default-500ep
-    group: formal-bsds
+    name: laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+    group: laion-cluster-pretrain
     job_type: train
     tags:
-      - formal
-      - bsds
-      - default
-      - extent
-      - 500ep
-    save_dir: outputs/parametric_edge_training/default/wandb
+      - laion
+      - cluster
+      - 2gpu
+      - q640
+      - effective-batch-256
+      - lr5e-5
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q640-eb256-lr5e5/wandb

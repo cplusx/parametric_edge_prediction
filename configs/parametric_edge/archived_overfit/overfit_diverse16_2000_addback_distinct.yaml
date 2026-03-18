@@ -1,0 +1,17 @@
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_diverse16_2000_addback_distinct
+
+loss:
+  distinct_weight: 0.1
+
+logging:
+  wandb:
+    name: overfit-diverse16-2000-addback-distinct
+    tags:
+      - overfit
+      - gpu
+      - diverse16
+      - 2000epoch
+      - addback
+      - distinct
+    save_dir: outputs/parametric_edge_training/overfit_diverse16_2000_addback_distinct/wandb
