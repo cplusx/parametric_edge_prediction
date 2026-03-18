@@ -117,11 +117,9 @@ Current intended command on cluster:
 
 ```bash
 ./scripts/submit_cluster_laion_pretrain_sbatch.sh \
-  --partition gbunchQ3 \
-  --time 08:00:00 \
-  --gpus 2 \
-  --nodelist fstsvr11 \
-  --run-name laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32
+  --partition gbunchQ \
+  --gpus 4 \
+  --run-name laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
 ```
 
 Runtime rule:
@@ -130,9 +128,10 @@ Runtime rule:
 - The submit script may only add per-run output paths and the W&B run name.
 - Do not generate cluster-only data/training overrides.
 - Current cluster pretraining uses full FP32, not mixed precision.
-- Current conservative FP32 profile uses `batch_size: 8`, `accumulate_grad_batches: 16`, `num_queries: 512`, and `hidden_dim: 320`.
+- Current primary FP32 cluster profile uses `batch_size: 16`, `accumulate_grad_batches: 4`, `num_queries: 512`, and `hidden_dim: 320` on 4 GPUs.
+- Current committed fallback config is [configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml](../configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml), which keeps `batch_size: 16` and uses `accumulate_grad_batches: 8` on 2 GPUs.
 - LAION cluster runs log to the dedicated W&B project `laion_parametric_edge_prediction`, not the BSDS/default project.
-- The short `00:20:00` limit was only enough for a startup/profiling probe and is not an appropriate training time limit for this profile.
+- When `--time` is omitted, the submit script now uses the partition's longest allowed time limit automatically.
 
 Important reset on 2026-03-14:
 

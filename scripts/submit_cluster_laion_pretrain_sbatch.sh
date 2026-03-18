@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-GPUS=2
+GPUS=4
 PARTITION=""
 NODELIST=""
 TIME_LIMIT=""
 CPUS=0
 MEMORY=""
-RUN_NAME="laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32"
+RUN_NAME="laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32"
 CONFIG_PATH="configs/parametric_edge/laion_pretrain_cluster.yaml"
 CONDA_ENV="diffusers"
 OUTPUT_ROOT="${CLUSTER_OUTPUT_ROOT:-$HOME/cluster_runs/parametric_edge_prediction}"
@@ -75,8 +75,24 @@ if [[ -z "$PARTITION" ]]; then
 fi
 
 if [[ -z "$TIME_LIMIT" ]]; then
-  echo "--time is required" >&2
-  exit 1
+  case "$PARTITION" in
+    gbunchQ)
+      TIME_LIMIT="3-00:00:00"
+      ;;
+    gbunchQ1)
+      TIME_LIMIT="7-00:00:00"
+      ;;
+    gbunchQ2|gbunchQ3|gbunchQ4)
+      TIME_LIMIT="2-00:00:00"
+      ;;
+    gbunchCPU)
+      TIME_LIMIT="3-00:00:00"
+      ;;
+    *)
+      echo "--time is required for unknown partition: $PARTITION" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [[ ! -f "$REPO_ROOT/$CONFIG_PATH" ]]; then

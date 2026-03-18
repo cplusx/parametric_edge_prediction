@@ -1,9 +1,10 @@
+import math
 import random
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytorch_lightning as pl
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from edge_datasets.laion_synthetic_dataset import LaionSyntheticEdgeDataset, discover_laion_synthetic_samples
 from edge_datasets.parametric_edge_dataset import ParametricEdgeDataset, parametric_edge_collate
@@ -52,6 +53,20 @@ def _resolve_globbed_paths(patterns) -> List[Path]:
         seen.add(resolved_path)
         unique_paths.append(path)
     return unique_paths
+
+
+class RepeatedDataset(Dataset):
+    def __init__(self, base_dataset: Dataset, repeat_factor: int) -> None:
+        if repeat_factor <= 0:
+            raise ValueError('repeat_factor must be positive')
+        self.base_dataset = base_dataset
+        self.repeat_factor = int(repeat_factor)
+
+    def __len__(self) -> int:
+        return len(self.base_dataset) * self.repeat_factor
+
+    def __getitem__(self, index: int):
+        return self.base_dataset[index % len(self.base_dataset)]
 
 
 class ParametricEdgeDataModule(pl.LightningDataModule):
@@ -139,6 +154,21 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
                 )
             )
         return datasets
+
+    def _expand_train_dataset_for_virtual_epoch(self, dataset: Dataset) -> Dataset:
+        trainer_cfg = self.config.get('trainer', {})
+        effective_steps = trainer_cfg.get('effective_train_batches_per_epoch')
+        if effective_steps is None:
+            return dataset
+        accumulate = max(1, int(trainer_cfg.get('accumulate_grad_batches', 1)))
+        batch_size = int(self.config['data']['batch_size'])
+        devices = max(1, int(trainer_cfg.get('devices', 1)))
+        required_samples = int(effective_steps) * accumulate * batch_size * devices
+        dataset_length = len(dataset)
+        if dataset_length <= 0 or dataset_length >= required_samples:
+            return dataset
+        repeat_factor = int(math.ceil(required_samples / dataset_length))
+        return RepeatedDataset(dataset, repeat_factor)
 
     def setup(self, stage: Optional[str] = None) -> None:
         data_cfg = self.config['data']
@@ -231,6 +261,7 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
         if not train_datasets:
             raise ValueError('Training dataset list is empty. Enable primary train data or configure extra_train_datasets.')
         self.train_dataset = train_datasets[0] if len(train_datasets) == 1 else ConcatDataset(train_datasets)
+        self.train_dataset = self._expand_train_dataset_for_virtual_epoch(self.train_dataset)
         self.val_dataset = self._build_optional_dataset_from_spec(data_cfg.get('val_dataset'), split='val', train_augment=False, common=common)
         if self.val_dataset is None:
             self.val_dataset = self._build_dataset(
