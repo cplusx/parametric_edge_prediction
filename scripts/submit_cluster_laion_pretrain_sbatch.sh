@@ -113,12 +113,7 @@ if [[ -z "$MEMORY" ]]; then
 fi
 
 SUBMIT_TOKEN="${RUN_NAME}-$(date +%Y%m%d-%H%M%S)-${GPUS}gpu"
-OUTPUT_ROOT="$(python - <<'PY' "$OUTPUT_ROOT"
-from pathlib import Path
-import sys
-print(Path(sys.argv[1]).expanduser())
-PY
-)"
+OUTPUT_ROOT="${OUTPUT_ROOT/#\~/$HOME}"
 SUBMIT_DIR="$OUTPUT_ROOT/${SUBMIT_TOKEN}"
 mkdir -p "$SUBMIT_DIR"
 SBATCH_FILE="$SUBMIT_DIR/launch.sbatch"

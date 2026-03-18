@@ -91,12 +91,7 @@ if (( EFFECTIVE_BATCH % GLOBAL_MICRO_BATCH != 0 )); then
 fi
 ACCUMULATE=$(( EFFECTIVE_BATCH / GLOBAL_MICRO_BATCH ))
 RUN_TOKEN="${RUN_NAME}-$(date +%Y%m%d-%H%M%S)-${GPUS}gpu"
-OUTPUT_ROOT="$(python - <<'PY' "$OUTPUT_ROOT"
-from pathlib import Path
-import sys
-print(Path(sys.argv[1]).expanduser())
-PY
-)"
+OUTPUT_ROOT="${OUTPUT_ROOT/#\~/$HOME}"
 OUTPUT_DIR="$OUTPUT_ROOT/${RUN_TOKEN}"
 CONFIG_PATH="$OUTPUT_DIR/resolved_cluster_config.yaml"
 mkdir -p "$OUTPUT_DIR"
