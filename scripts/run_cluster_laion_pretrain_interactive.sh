@@ -174,6 +174,7 @@ logging:
     name: ${RUN_TOKEN}
     group: laion-cluster-pretrain
     job_type: train
+    save_dir: ${OUTPUT_DIR}/wandb
     tags:
       - laion
       - cluster
