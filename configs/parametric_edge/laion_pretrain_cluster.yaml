@@ -174,7 +174,7 @@ logging:
   wandb:
     enabled: true
     offline: false
-    project: parametric-edge-prediction
+    project: laion_parametric_edge_prediction
     name: laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32
     group: laion-cluster-pretrain
     job_type: train
