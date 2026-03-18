@@ -11,6 +11,25 @@ from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cac
 SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 
 
+def select_laion_sample_records(
+    sample_records: Sequence[Dict[str, Path]],
+    max_samples: Optional[int] = None,
+    selection_seed: Optional[int] = None,
+    selection_offset: int = 0,
+) -> List[Dict[str, Path]]:
+    records = list(sample_records)
+    if selection_seed is not None:
+        rng = np.random.default_rng(int(selection_seed))
+        order = rng.permutation(len(records)).tolist()
+        records = [records[index] for index in order]
+    offset = max(0, int(selection_offset))
+    if offset:
+        records = records[offset:]
+    if max_samples is not None:
+        records = records[: int(max_samples)]
+    return records
+
+
 def discover_laion_synthetic_samples(
     data_root: Path,
     cache_root: Path,
@@ -20,6 +39,8 @@ def discover_laion_synthetic_samples(
     batch_glob: str = 'batch*',
     quantize: int = 4,
     max_samples: Optional[int] = None,
+    selection_seed: Optional[int] = None,
+    selection_offset: int = 0,
 ) -> List[Dict[str, Path]]:
     data_root = Path(data_root)
     cache_root = Path(cache_root)
@@ -51,9 +72,12 @@ def discover_laion_synthetic_samples(
                 'edge_path': edge_path,
                 'cache_path': cache_path,
             })
-            if max_samples is not None and len(records) >= int(max_samples):
-                return records
-    return records
+    return select_laion_sample_records(
+        records,
+        max_samples=max_samples,
+        selection_seed=selection_seed,
+        selection_offset=selection_offset,
+    )
 
 
 class LaionSyntheticEdgeDataset(Dataset):

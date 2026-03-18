@@ -87,6 +87,15 @@ def resolve_trainer_strategy(config) -> str:
     return strategy
 
 
+def resolve_limit_train_batches(config):
+    trainer_cfg = config.get('trainer', {})
+    if trainer_cfg.get('effective_train_batches_per_epoch') is None:
+        return trainer_cfg.get('limit_train_batches', 1.0)
+    effective_steps = int(trainer_cfg['effective_train_batches_per_epoch'])
+    accumulate = max(1, int(trainer_cfg.get('accumulate_grad_batches', 1)))
+    return effective_steps * accumulate
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
@@ -128,7 +137,7 @@ def main() -> None:
         precision=config['trainer'].get('precision', '32-true'),
         accumulate_grad_batches=int(config['trainer'].get('accumulate_grad_batches', 1)),
         log_every_n_steps=int(config['trainer'].get('log_every_n_steps', 1)),
-        limit_train_batches=config['trainer'].get('limit_train_batches', 1.0),
+        limit_train_batches=resolve_limit_train_batches(config),
         limit_val_batches=config['trainer'].get('limit_val_batches', 1.0),
         overfit_batches=config['trainer'].get('overfit_batches', 0.0),
         gradient_clip_val=float(config['trainer'].get('gradient_clip_val', 0.1)),

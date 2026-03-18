@@ -87,6 +87,41 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             **common,
         )
 
+    def _build_laion_dataset(self, dataset_cfg: Dict, split: str, train_augment: bool, common: Dict):
+        sample_records = discover_laion_synthetic_samples(
+            data_root=Path(dataset_cfg['data_root']),
+            cache_root=Path(dataset_cfg.get('cache_root', Path(dataset_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
+            image_root=Path(dataset_cfg['image_root']) if dataset_cfg.get('image_root') is not None else None,
+            edge_root=Path(dataset_cfg['edge_root']) if dataset_cfg.get('edge_root') is not None else None,
+            batches=dataset_cfg.get('batches'),
+            batch_glob=str(dataset_cfg.get('batch_glob', 'batch*')),
+            quantize=int(dataset_cfg.get('quantize', 4)),
+            max_samples=dataset_cfg.get('max_samples'),
+            selection_seed=dataset_cfg.get('selection_seed'),
+            selection_offset=int(dataset_cfg.get('selection_offset', 0)),
+        )
+        if not sample_records:
+            raise FileNotFoundError(f'No LAION synthetic samples found for config: {dataset_cfg}')
+        return LaionSyntheticEdgeDataset(
+            sample_records=sample_records,
+            image_size=int(common['image_size']),
+            target_degree=int(common['target_degree']),
+            min_curve_length=float(common['min_curve_length']),
+            max_targets=int(common['max_targets']),
+            split=split,
+            train_augment=train_augment,
+            augment_cfg=dict(common['augment_cfg']),
+            rgb_input=bool(common['rgb_input']),
+        )
+
+    def _build_optional_dataset_from_spec(self, dataset_cfg: Optional[Dict], split: str, train_augment: bool, common: Dict):
+        if dataset_cfg is None:
+            return None
+        dataset_type = str(dataset_cfg.get('dataset_type', '')).lower()
+        if dataset_type == 'laion_synthetic':
+            return self._build_laion_dataset(dataset_cfg, split=split, train_augment=train_augment, common=common)
+        raise ValueError(f'Unsupported dataset_type for {split}: {dataset_type}')
+
     def _build_extra_train_datasets(self, common: Dict) -> List:
         data_cfg = self.config['data']
         extra_cfgs = list(data_cfg.get('extra_train_datasets', []))
@@ -95,29 +130,12 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             dataset_type = str(extra_cfg.get('dataset_type', '')).lower()
             if dataset_type != 'laion_synthetic':
                 raise ValueError(f'Unsupported extra_train_datasets dataset_type: {dataset_type}')
-            sample_records = discover_laion_synthetic_samples(
-                data_root=Path(extra_cfg['data_root']),
-                cache_root=Path(extra_cfg.get('cache_root', Path(extra_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
-                image_root=Path(extra_cfg['image_root']) if extra_cfg.get('image_root') is not None else None,
-                edge_root=Path(extra_cfg['edge_root']) if extra_cfg.get('edge_root') is not None else None,
-                batches=extra_cfg.get('batches'),
-                batch_glob=str(extra_cfg.get('batch_glob', 'batch*')),
-                quantize=int(extra_cfg.get('quantize', 4)),
-                max_samples=extra_cfg.get('max_samples'),
-            )
-            if not sample_records:
-                raise FileNotFoundError(f'No LAION synthetic samples found for config: {extra_cfg}')
             datasets.append(
-                LaionSyntheticEdgeDataset(
-                    sample_records=sample_records,
-                    image_size=int(common['image_size']),
-                    target_degree=int(common['target_degree']),
-                    min_curve_length=float(common['min_curve_length']),
-                    max_targets=int(common['max_targets']),
+                self._build_laion_dataset(
+                    extra_cfg,
                     split='train',
                     train_augment=bool(data_cfg.get('train_augment', True)),
-                    augment_cfg=dict(common['augment_cfg']),
-                    rgb_input=bool(common['rgb_input']),
+                    common=common,
                 )
             )
         return datasets
@@ -204,18 +222,22 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
         if not train_datasets:
             raise ValueError('Training dataset list is empty. Enable primary train data or configure extra_train_datasets.')
         self.train_dataset = train_datasets[0] if len(train_datasets) == 1 else ConcatDataset(train_datasets)
-        self.val_dataset = self._build_dataset(
-            val_paths or train_paths[:1],
-            split='val',
-            train_augment=False,
-            common=common,
-        )
-        self.test_dataset = self._build_dataset(
-            test_paths or val_paths or train_paths[:1],
-            split='test',
-            train_augment=False,
-            common=common,
-        )
+        self.val_dataset = self._build_optional_dataset_from_spec(data_cfg.get('val_dataset'), split='val', train_augment=False, common=common)
+        if self.val_dataset is None:
+            self.val_dataset = self._build_dataset(
+                val_paths or train_paths[:1],
+                split='val',
+                train_augment=False,
+                common=common,
+            )
+        self.test_dataset = self._build_optional_dataset_from_spec(data_cfg.get('test_dataset'), split='test', train_augment=False, common=common)
+        if self.test_dataset is None:
+            self.test_dataset = self._build_dataset(
+                test_paths or val_paths or train_paths[:1],
+                split='test',
+                train_augment=False,
+                common=common,
+            )
 
     def _loader_kwargs(self) -> Dict:
         num_workers = int(self.config['data'].get('num_workers', 0))
