@@ -143,20 +143,29 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
     def setup(self, stage: Optional[str] = None) -> None:
         data_cfg = self.config['data']
         include_primary_train_dataset = bool(data_cfg.get('include_primary_train_dataset', True))
+        needs_primary_val_dataset = data_cfg.get('val_dataset') is None
+        needs_primary_test_dataset = data_cfg.get('test_dataset') is None
+        require_primary_split_paths = include_primary_train_dataset or needs_primary_val_dataset or needs_primary_test_dataset
         explicit_split_globs = any(
             data_cfg.get(key) is not None
             for key in ('train_edge_glob', 'train_edge_globs', 'val_edge_glob', 'val_edge_globs', 'test_edge_glob', 'test_edge_globs')
         )
 
-        if explicit_split_globs:
+        train_paths = []
+        val_paths = []
+        test_paths = []
+
+        if not require_primary_split_paths:
+            pass
+        elif explicit_split_globs:
             train_paths = _resolve_globbed_paths(data_cfg.get('train_edge_globs', data_cfg.get('train_edge_glob')))
             val_paths = _resolve_globbed_paths(data_cfg.get('val_edge_globs', data_cfg.get('val_edge_glob')))
             test_paths = _resolve_globbed_paths(data_cfg.get('test_edge_globs', data_cfg.get('test_edge_glob')))
-            if not train_paths:
+            if include_primary_train_dataset and not train_paths:
                 raise FileNotFoundError('No training edge maps matched train_edge_glob/train_edge_globs')
-            if not val_paths:
+            if needs_primary_val_dataset and not val_paths:
                 raise FileNotFoundError('No validation edge maps matched val_edge_glob/val_edge_globs')
-            if not test_paths:
+            if needs_primary_test_dataset and not test_paths:
                 raise FileNotFoundError('No test edge maps matched test_edge_glob/test_edge_globs')
         else:
             edge_paths = sorted(Path().glob(data_cfg['edge_glob']))
@@ -188,7 +197,7 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
                     val_paths = val_paths or edge_paths[:1]
                     test_paths = test_paths or []
 
-        if data_cfg.get('overfit_num_samples') and explicit_split_globs:
+        if require_primary_split_paths and data_cfg.get('overfit_num_samples') and explicit_split_globs:
             count = int(data_cfg['overfit_num_samples'])
             combined_paths = train_paths + val_paths + test_paths
             chosen_paths = combined_paths[:count]
