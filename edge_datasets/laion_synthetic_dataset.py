@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -9,6 +10,73 @@ from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_
 from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_graph, load_image_array_original, unpack_polylines
 
 SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
+
+
+def _laion_entry_cache_path(
+    data_root: Path,
+    cache_root: Path,
+    image_root: Path,
+    edge_root: Path,
+    batch_glob: str,
+    quantize: int,
+    batches: Optional[Sequence[str]],
+) -> Path:
+    key_parts = [
+        str(data_root),
+        str(cache_root),
+        str(image_root),
+        str(edge_root),
+        str(batch_glob),
+        str(int(quantize)),
+    ]
+    if batches is not None:
+        key_parts.extend(sorted(str(batch) for batch in batches))
+    digest = hashlib.sha1('\n'.join(key_parts).encode('utf-8')).hexdigest()[:12]
+    return data_root / f'laion_entry_cache_{digest}.txt'
+
+
+def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
+    if not cache_path.exists():
+        return []
+    records: List[Dict[str, Path]] = []
+    with cache_path.open('r', encoding='utf-8') as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip('\n')
+            if not line:
+                continue
+            fields = line.split('\t')
+            if len(fields) != 5:
+                continue
+            batch_name, image_id, image_path_str, edge_path_str, graph_cache_path_str = fields
+            image_path = Path(image_path_str)
+            edge_path = Path(edge_path_str)
+            graph_cache_path = Path(graph_cache_path_str)
+            if not image_path.exists() or not edge_path.exists() or not graph_cache_path.exists():
+                continue
+            records.append({
+                'batch_name': batch_name,
+                'image_id': image_id,
+                'image_path': image_path,
+                'edge_path': edge_path,
+                'cache_path': graph_cache_path,
+            })
+    return records
+
+
+def _write_laion_entry_cache(cache_path: Path, records: Sequence[Dict[str, Path]]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with cache_path.open('w', encoding='utf-8') as handle:
+        for record in records:
+            handle.write(
+                '\t'.join([
+                    str(record['batch_name']),
+                    str(record['image_id']),
+                    str(record['image_path']),
+                    str(record['edge_path']),
+                    str(record['cache_path']),
+                ])
+            )
+            handle.write('\n')
 
 
 def select_laion_sample_records(
@@ -46,6 +114,23 @@ def discover_laion_synthetic_samples(
     cache_root = Path(cache_root)
     image_root = Path(image_root) if image_root is not None else data_root
     edge_root = Path(edge_root) if edge_root is not None else (data_root / 'laion_edge_v2')
+    entry_cache_path = _laion_entry_cache_path(
+        data_root=data_root,
+        cache_root=cache_root,
+        image_root=image_root,
+        edge_root=edge_root,
+        batch_glob=batch_glob,
+        quantize=quantize,
+        batches=batches,
+    )
+    cached_records = _read_laion_entry_cache(entry_cache_path)
+    if cached_records:
+        return select_laion_sample_records(
+            cached_records,
+            max_samples=max_samples,
+            selection_seed=selection_seed,
+            selection_offset=selection_offset,
+        )
     batch_names = [str(batch) for batch in batches] if batches is not None else sorted(path.name for path in cache_root.glob(batch_glob) if path.is_dir())
     records: List[Dict[str, Path]] = []
     for batch_name in batch_names:
@@ -72,6 +157,8 @@ def discover_laion_synthetic_samples(
                 'edge_path': edge_path,
                 'cache_path': cache_path,
             })
+    if records:
+        _write_laion_entry_cache(entry_cache_path, records)
     return select_laion_sample_records(
         records,
         max_samples=max_samples,

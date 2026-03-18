@@ -140,9 +140,10 @@ Do not use `srun` for this repository's training workflow.
 Project-specific policy:
 
 - debug with short `sbatch` probes instead of interactive `srun`
-- keep launch logic in committed repo configs and submit scripts
+- keep launch logic in committed repo configs; do not add wrapper submit scripts for this repo
 - if training settings change, edit the repo config locally, commit it, and let the cluster pull it
-- keep cluster-only files limited to submitted batch scripts, logs, copied base configs, and runtime output directories
+- keep temporary cluster task files under `cluster_tasks/` inside the repo and ignore that directory in Git
+- keep cluster-only files limited to temporary batch scripts, logs, and runtime output directories
 
 ## 7. Writing reliable batch jobs
 
@@ -159,8 +160,10 @@ Recommended structure:
 #SBATCH -e /path/to/job.%j.err
 
 set -e
+set +u
 source /home/user/<cluster_user>/anaconda3/etc/profile.d/conda.sh
 conda activate base
+set -u
 cd /home/user/<cluster_user>/<repo>
 python your_script.py
 ```
@@ -169,6 +172,7 @@ Recommendations:
 
 - write stdout/stderr to known locations
 - use absolute paths
+- if the environment has activate hooks that assume unset shell vars are allowed, wrap `conda activate` with `set +u` before it and restore `set -u` after it
 - make long preprocessing scripts skip outputs that already exist
 - split large workloads into a small number of large jobs rather than many tiny jobs
 
@@ -258,6 +262,29 @@ Do **not** delete:
 ## 12. Practical rules of thumb
 
 - Start with discovery, not assumptions.
+
+## 13. Repo-Specific Notes For Parametric Edge
+
+- Do not put hardware names like `h100` or `a40` into run names. Use model/data/batch semantics only.
+- For this repo, temporary cluster task files belong under `cluster_tasks/` in the repo root, not under a separate external folder.
+- LAION dataset discovery now supports a text entry cache under the LAION data root. If the cache file exists, reuse it; if it does not, create it once at startup.
+
+## 14. Lessons From 2026-03-18
+
+Mistakes made today:
+
+- Requested `256G` for a 4-GPU job before checking the actual node layouts. That was unjustified and could unnecessarily restrict placement.
+- Assumed the target machine type from the run name instead of checking the real node configuration.
+- Reintroduced a repo-local wrapper submit script even though this repo should use direct `sbatch`.
+- Used `set -u` around `conda activate` in a non-interactive batch shell, which broke activation through `ADDR2LINE` in the environment hook.
+
+Correct workflow:
+
+- Check `sinfo -N` or `scontrol show node` before choosing `--gres`, `-c`, and `--mem`.
+- Distinguish scheduling failures from startup failures with `squeue`, `sacct`, `.out`, and `.err` before changing resources.
+- Submit training with plain `sbatch`; if a temporary script is needed, place it in `cluster_tasks/` and keep it out of Git.
+- In batch jobs, use `set +u`, then `source .../conda.sh`, then `conda activate ...`, then restore `set -u`.
+- Use `srun --jobid ... --overlap` only as an attached monitoring step for a running allocation, not as the main launch path.
 - Use `tmux` first.
 - Probe before large jobs.
 - Test GPU partitions for CPU-only jobs.
