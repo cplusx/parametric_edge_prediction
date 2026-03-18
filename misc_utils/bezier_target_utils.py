@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 from PIL import Image
+from scipy import sparse
 
 from bezierization.ablation_api import run_version
 
@@ -159,6 +160,14 @@ def build_graph_cache_key(edge_path: Path, version_name: str) -> str:
 
 
 def load_binary_edge_annotation(edge_path: Path) -> np.ndarray:
+    edge_path = Path(edge_path)
+    if edge_path.suffix == '.npz':
+        data = np.load(edge_path, allow_pickle=False)
+        if {'indices', 'indptr', 'data', 'shape'}.issubset(data.files):
+            matrix = sparse.csr_matrix((data['data'], data['indices'], data['indptr']), shape=tuple(int(value) for value in data['shape']))
+            edge_mask = (matrix.toarray() > 0).astype(np.uint8)
+            return (edge_mask * 255).astype(np.uint8)
+        raise ValueError(f'Unsupported npz edge annotation format at {edge_path}')
     image = Image.open(edge_path).convert('L')
     array = np.asarray(image, dtype=np.uint8)
     high_mask = (array > 127).astype(np.uint8)

@@ -9,6 +9,7 @@ data:
     - edge_data/HED-BSDS/images/val
   val_input_root: edge_data/HED-BSDS/images/test
   test_input_root: edge_data/HED-BSDS/images/test
+  include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
   batch_size: 10
@@ -32,6 +33,14 @@ data:
   limit_samples: null
   overfit_num_samples: null
   sample_names: null
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /home/devdata/laion/edge_detection
+      image_root: /home/devdata/laion/edge_detection
+      edge_root: /home/devdata/laion/edge_detection/laion_edge_v2
+      cache_root: /home/devdata/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+      batch_glob: batch*
+      quantize: 4
 
 model:
   input_channels: 3
@@ -82,6 +91,7 @@ loss:
   curve_distance_length_weight: 0.25
   extent_weight: 1.0
   no_object_weight: 1.0
+  dynamic_class_balance: true
   aux_weight: 0.2
   dn_weight: 3.0
   dn_curve_weight: 5.0

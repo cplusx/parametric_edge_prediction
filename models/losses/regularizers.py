@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 
-from models.losses.base import BaseLossComponent
+from models.losses.base import BaseLossComponent, balanced_class_weights
 from models.matcher import build_curve_cost_matrix, hungarian_curve_matching
 
 
@@ -211,8 +211,14 @@ class DenoisingLoss(BaseLossComponent):
         labels = dn_meta['labels'].to(device)
         mask = dn_meta['mask'].to(device)
         gt_curves = dn_meta['curves'].to(device)
-        class_weight = torch.tensor([1.0, float(self.config['loss'].get('no_object_weight', 0.2))], device=device)
-        loss_ce = F.cross_entropy(logits.transpose(1, 2), labels, weight=class_weight)
+        if bool(self.config['loss'].get('dynamic_class_balance', True)):
+            ce_per_query = F.cross_entropy(logits.transpose(1, 2), labels, reduction='none')
+            class_weights, normalizer, active_mask = balanced_class_weights(labels, positive_class=0)
+            per_sample = (ce_per_query * class_weights).sum(dim=1) / normalizer
+            loss_ce = per_sample[active_mask].mean() if bool(active_mask.any()) else logits.sum() * 0.0
+        else:
+            class_weight = torch.tensor([1.0, float(self.config['loss'].get('no_object_weight', 0.2))], device=device)
+            loss_ce = F.cross_entropy(logits.transpose(1, 2), labels, weight=class_weight)
         if mask.any():
             pred_valid = curves[mask]
             target_valid = gt_curves[mask]

@@ -6,52 +6,87 @@ import torch
 from torch.utils.data import Dataset
 
 from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_training_sample_with_mask
-from misc_utils.bezier_target_utils import ensure_graph_cache, load_binary_edge_annotation, load_cached_graph, load_image_array_original, resolve_input_path, unpack_polylines
+from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_graph, load_image_array_original, unpack_polylines
+
+SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 
 
-class ParametricEdgeDataset(Dataset):
+def discover_laion_synthetic_samples(
+    data_root: Path,
+    cache_root: Path,
+    image_root: Optional[Path] = None,
+    edge_root: Optional[Path] = None,
+    batches: Optional[Sequence[str]] = None,
+    batch_glob: str = 'batch*',
+    quantize: int = 4,
+    max_samples: Optional[int] = None,
+) -> List[Dict[str, Path]]:
+    data_root = Path(data_root)
+    cache_root = Path(cache_root)
+    image_root = Path(image_root) if image_root is not None else data_root
+    edge_root = Path(edge_root) if edge_root is not None else (data_root / 'laion_edge_v2')
+    batch_names = [str(batch) for batch in batches] if batches is not None else sorted(path.name for path in cache_root.glob(batch_glob) if path.is_dir())
+    records: List[Dict[str, Path]] = []
+    for batch_name in batch_names:
+        cache_batch_dir = cache_root / batch_name
+        if not cache_batch_dir.exists():
+            continue
+        for cache_path in sorted(cache_batch_dir.glob('*_graph.npz')):
+            image_id = cache_path.stem.replace('_graph', '')
+            edge_path = edge_root / batch_name / 'edges' / f'quantize_{int(quantize)}' / 'edge' / f'{image_id}.npz'
+            if not edge_path.exists():
+                continue
+            image_path = None
+            for suffix in SUPPORTED_IMAGE_SUFFIXES:
+                candidate = image_root / batch_name / 'images' / f'{image_id}{suffix}'
+                if candidate.exists():
+                    image_path = candidate
+                    break
+            if image_path is None:
+                continue
+            records.append({
+                'batch_name': batch_name,
+                'image_id': image_id,
+                'image_path': image_path,
+                'edge_path': edge_path,
+                'cache_path': cache_path,
+            })
+            if max_samples is not None and len(records) >= int(max_samples):
+                return records
+    return records
+
+
+class LaionSyntheticEdgeDataset(Dataset):
     def __init__(
         self,
-        edge_paths: Sequence[Path],
-        cache_root: Path,
+        sample_records: Sequence[Dict[str, Path]],
         image_size: int,
-        version_name: str,
-        input_root: Optional[Sequence[Path]] = None,
-        rgb_input: bool = False,
-        target_degree: int = 3,
-        min_curve_length: float = 3.0,
-        max_targets: int = 128,
+        target_degree: int,
+        min_curve_length: float,
+        max_targets: int,
         split: str = 'train',
         train_augment: bool = False,
         augment_cfg: Optional[Dict] = None,
+        rgb_input: bool = True,
     ) -> None:
-        self.edge_paths = [Path(path) for path in edge_paths]
-        self.cache_root = Path(cache_root)
+        self.sample_records = list(sample_records)
         self.image_size = int(image_size)
-        self.version_name = version_name
-        self.input_root = [Path(root) for root in input_root] if input_root is not None else None
-        self.rgb_input = bool(rgb_input)
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)
         self.max_targets = int(max_targets)
         self.split = str(split)
         self.train_augment = bool(train_augment)
         self.augment_cfg = dict(augment_cfg or {})
+        self.rgb_input = bool(rgb_input)
 
     def __len__(self) -> int:
-        return len(self.edge_paths)
+        return len(self.sample_records)
 
     def __getitem__(self, index: int) -> Dict:
-        edge_path = self.edge_paths[index]
-        cache_path = ensure_graph_cache(
-            edge_path=edge_path,
-            cache_root=self.cache_root,
-            version_name=self.version_name,
-        )
-        graph_data = load_cached_graph(cache_path)
-        image_path = resolve_input_path(edge_path, self.input_root)
-        image = load_image_array_original(image_path, rgb=self.rgb_input)
-        edge_mask = load_binary_edge_annotation(edge_path).astype(np.float32)[..., None] / 255.0
+        record = self.sample_records[index]
+        graph_data = load_cached_graph(Path(record['cache_path']))
+        image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
+        edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
         rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
         if self.split == 'train' and self.train_augment:
@@ -84,6 +119,7 @@ class ParametricEdgeDataset(Dataset):
         norm_lengths = torch.from_numpy(target_data.get('curve_norm_lengths', target_data['curve_lengths'] * 0.0)).float()
         curvatures = torch.from_numpy(target_data.get('curve_curvatures', target_data['curve_lengths'] * 0.0)).float()
         labels = torch.ones((curves.shape[0],), dtype=torch.long)
+        sample_id = f"{record['batch_name']}_{record['image_id']}"
         return {
             'image': torch.from_numpy(image_chw).float(),
             'target': {
@@ -96,14 +132,10 @@ class ParametricEdgeDataset(Dataset):
                 'image_size': torch.from_numpy(target_data['image_size']).long(),
                 'edge_mask': torch.from_numpy(edge_chw).float(),
                 'num_targets': torch.tensor(curves.shape[0], dtype=torch.long),
-                'sample_id': edge_path.stem,
-                'edge_path': str(edge_path),
-                'input_path': str(image_path),
+                'sample_id': sample_id,
+                'edge_path': str(record['edge_path']),
+                'input_path': str(record['image_path']),
+                'cache_path': str(record['cache_path']),
+                'dataset_name': 'laion_synthetic',
             },
         }
-
-
-def parametric_edge_collate(batch: List[Dict]) -> Dict:
-    images = torch.stack([item['image'] for item in batch], dim=0)
-    targets = [item['target'] for item in batch]
-    return {'images': images, 'targets': targets}

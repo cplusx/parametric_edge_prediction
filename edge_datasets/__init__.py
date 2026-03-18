@@ -1,4 +1,5 @@
+from edge_datasets.laion_synthetic_dataset import LaionSyntheticEdgeDataset
 from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
 from edge_datasets.parametric_edge_dataset import ParametricEdgeDataset
 
-__all__ = ['ParametricEdgeDataModule', 'ParametricEdgeDataset']
+__all__ = ['ParametricEdgeDataModule', 'ParametricEdgeDataset', 'LaionSyntheticEdgeDataset']

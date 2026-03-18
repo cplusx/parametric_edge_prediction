@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from models.geometry import curve_boxes_xyxy, matched_generalized_box_iou, symmetric_curve_distance
-from models.losses.base import BaseLossComponent, matched_curve_weights, weighted_mean
+from models.losses.base import BaseLossComponent, balanced_class_weights, matched_curve_weights, weighted_mean
 
 
 class ClassificationLoss(BaseLossComponent):
@@ -16,9 +16,30 @@ class ClassificationLoss(BaseLossComponent):
     ) -> torch.Tensor:
         loss_cfg = self.config['loss']
         no_object_weight = float(loss_cfg.get('no_object_weight', 0.2))
+        dynamic_class_balance = bool(loss_cfg.get('dynamic_class_balance', True))
         loss_type = str(loss_cfg.get('class_loss_type', 'ce'))
         focal_alpha = float(loss_cfg.get('focal_alpha', 0.25))
         focal_gamma = float(loss_cfg.get('focal_gamma', 2.0))
+
+        balance_weights = None
+        balance_normalizer = None
+        balance_active = None
+        if dynamic_class_balance:
+            balance_weights, balance_normalizer, balance_active = balanced_class_weights(
+                target_classes,
+                positive_class=0,
+                query_weights=query_weights,
+            )
+
+        def reduce_per_sample(loss_values: torch.Tensor) -> torch.Tensor:
+            if balance_weights is not None:
+                per_sample = (loss_values * balance_weights).sum(dim=1) / balance_normalizer
+                return per_sample[balance_active].mean() if bool(balance_active.any()) else loss_values.sum() * 0.0
+            if query_weights is None:
+                return loss_values.mean()
+            query_weights_local = query_weights.to(loss_values.device, loss_values.dtype)
+            return (loss_values * query_weights_local).sum() / query_weights_local.sum().clamp_min(1e-6)
+
         if loss_type == 'focal':
             object_logits = pred_logits[..., 0] - pred_logits[..., 1]
             target_object = (target_classes == 0).float()
@@ -29,16 +50,10 @@ class ClassificationLoss(BaseLossComponent):
             weight = alpha_t * (1.0 - pt).pow(focal_gamma)
             neg_scale = torch.where(target_object > 0.5, torch.ones_like(target_object), torch.full_like(target_object, no_object_weight))
             loss = bce * weight * neg_scale
-            if query_weights is None:
-                return loss.mean()
-            query_weights = query_weights.to(loss.device, loss.dtype)
-            return (loss * query_weights).sum() / query_weights.sum().clamp_min(1e-6)
+            return reduce_per_sample(loss)
         class_weight = torch.tensor([1.0, no_object_weight], device=pred_logits.device)
         ce = F.cross_entropy(pred_logits.transpose(1, 2), target_classes, weight=class_weight, reduction='none')
-        if query_weights is None:
-            return ce.mean()
-        query_weights = query_weights.to(ce.device, ce.dtype)
-        return (ce * query_weights).sum() / query_weights.sum().clamp_min(1e-6)
+        return reduce_per_sample(ce)
 
 
 class MatchedCurveLoss(BaseLossComponent):

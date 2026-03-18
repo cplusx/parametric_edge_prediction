@@ -3,8 +3,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
+from edge_datasets.laion_synthetic_dataset import LaionSyntheticEdgeDataset, discover_laion_synthetic_samples
 from edge_datasets.parametric_edge_dataset import ParametricEdgeDataset, parametric_edge_collate
 from misc_utils.bezier_target_utils import image_id_from_stem
 
@@ -86,8 +87,44 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             **common,
         )
 
+    def _build_extra_train_datasets(self, common: Dict) -> List:
+        data_cfg = self.config['data']
+        extra_cfgs = list(data_cfg.get('extra_train_datasets', []))
+        datasets = []
+        for extra_cfg in extra_cfgs:
+            dataset_type = str(extra_cfg.get('dataset_type', '')).lower()
+            if dataset_type != 'laion_synthetic':
+                raise ValueError(f'Unsupported extra_train_datasets dataset_type: {dataset_type}')
+            sample_records = discover_laion_synthetic_samples(
+                data_root=Path(extra_cfg['data_root']),
+                cache_root=Path(extra_cfg.get('cache_root', Path(extra_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
+                image_root=Path(extra_cfg['image_root']) if extra_cfg.get('image_root') is not None else None,
+                edge_root=Path(extra_cfg['edge_root']) if extra_cfg.get('edge_root') is not None else None,
+                batches=extra_cfg.get('batches'),
+                batch_glob=str(extra_cfg.get('batch_glob', 'batch*')),
+                quantize=int(extra_cfg.get('quantize', 4)),
+                max_samples=extra_cfg.get('max_samples'),
+            )
+            if not sample_records:
+                raise FileNotFoundError(f'No LAION synthetic samples found for config: {extra_cfg}')
+            datasets.append(
+                LaionSyntheticEdgeDataset(
+                    sample_records=sample_records,
+                    image_size=int(common['image_size']),
+                    target_degree=int(common['target_degree']),
+                    min_curve_length=float(common['min_curve_length']),
+                    max_targets=int(common['max_targets']),
+                    split='train',
+                    train_augment=bool(data_cfg.get('train_augment', True)),
+                    augment_cfg=dict(common['augment_cfg']),
+                    rgb_input=bool(common['rgb_input']),
+                )
+            )
+        return datasets
+
     def setup(self, stage: Optional[str] = None) -> None:
         data_cfg = self.config['data']
+        include_primary_train_dataset = bool(data_cfg.get('include_primary_train_dataset', True))
         explicit_split_globs = any(
             data_cfg.get(key) is not None
             for key in ('train_edge_glob', 'train_edge_globs', 'val_edge_glob', 'val_edge_globs', 'test_edge_glob', 'test_edge_globs')
@@ -151,12 +188,22 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             max_targets=int(data_cfg.get('max_targets', 128)),
             augment_cfg=dict(data_cfg.get('augment', {})),
         )
-        self.train_dataset = self._build_dataset(
-            train_paths,
-            split='train',
-            train_augment=bool(data_cfg.get('train_augment', True)),
-            common=common,
-        )
+        primary_train_dataset = None
+        if include_primary_train_dataset:
+            primary_train_dataset = self._build_dataset(
+                train_paths,
+                split='train',
+                train_augment=bool(data_cfg.get('train_augment', True)),
+                common=common,
+            )
+        extra_train_datasets = self._build_extra_train_datasets(common)
+        train_datasets = []
+        if primary_train_dataset is not None:
+            train_datasets.append(primary_train_dataset)
+        train_datasets.extend(extra_train_datasets)
+        if not train_datasets:
+            raise ValueError('Training dataset list is empty. Enable primary train data or configure extra_train_datasets.')
+        self.train_dataset = train_datasets[0] if len(train_datasets) == 1 else ConcatDataset(train_datasets)
         self.val_dataset = self._build_dataset(
             val_paths or train_paths[:1],
             split='val',

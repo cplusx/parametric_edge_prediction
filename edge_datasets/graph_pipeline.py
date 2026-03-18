@@ -26,6 +26,28 @@ def _resize_image(image: np.ndarray, height: int, width: int) -> np.ndarray:
     return resized
 
 
+def _resize_mask(mask: np.ndarray, height: int, width: int) -> np.ndarray:
+    mask = np.asarray(mask, dtype=np.float32)
+    if mask.ndim == 2:
+        mask = mask[..., None]
+    channels = []
+    src_h, src_w = mask.shape[:2]
+    downscaling = height < src_h or width < src_w
+    for channel_idx in range(mask.shape[2]):
+        channel_mask = np.asarray(mask[..., channel_idx] > 0.0, dtype=np.uint8)
+        if downscaling and channel_mask.any():
+            channel_mask = ndimage.binary_dilation(channel_mask, iterations=1).astype(np.uint8)
+            pil = Image.fromarray(channel_mask * 255, mode='L')
+            resized = np.asarray(pil.resize((width, height), resample=Image.BOX), dtype=np.uint8)
+            channel = (resized > 0).astype(np.float32)
+        else:
+            pil = Image.fromarray(channel_mask * 255, mode='L')
+            resized = np.asarray(pil.resize((width, height), resample=Image.NEAREST), dtype=np.uint8)
+            channel = (resized > 0).astype(np.float32)
+        channels.append(channel)
+    return np.stack(channels, axis=-1)
+
+
 def _scale_polylines(polylines: List[np.ndarray], scale_x: float, scale_y: float) -> List[np.ndarray]:
     scale = np.asarray([scale_x, scale_y], dtype=np.float32)
     return [np.asarray(polyline, dtype=np.float32) * scale for polyline in polylines]
@@ -135,6 +157,26 @@ def apply_affine_to_image(image: np.ndarray, matrix_xy: np.ndarray) -> np.ndarra
     return np.clip(output, 0.0, 1.0)
 
 
+def apply_affine_to_mask(mask: np.ndarray, matrix_xy: np.ndarray) -> np.ndarray:
+    matrix_rc = _xy_to_rc_homography(matrix_xy)
+    inverse_rc = np.linalg.inv(matrix_rc)
+    if mask.ndim == 2:
+        mask = mask[..., None]
+    output = np.empty_like(mask)
+    for channel_idx in range(mask.shape[2]):
+        output[..., channel_idx] = ndimage.affine_transform(
+            mask[..., channel_idx],
+            matrix=inverse_rc[:2, :2],
+            offset=inverse_rc[:2, 2],
+            output_shape=mask.shape[:2],
+            order=0,
+            mode='constant',
+            cval=0.0,
+            prefilter=False,
+        )
+    return (output > 0.0).astype(np.float32)
+
+
 def apply_affine_to_polylines(polylines: List[np.ndarray], matrix_xy: np.ndarray) -> List[np.ndarray]:
     transformed = []
     linear = matrix_xy[:2, :2]
@@ -239,6 +281,38 @@ def random_crop_image_and_polylines(
     return cropped, clip_polylines_to_rect(shifted, crop_w, crop_h)
 
 
+def random_crop_image_mask_and_polylines(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    crop_size: Tuple[int, int],
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+    if mask.ndim == 2:
+        mask = mask[..., None]
+    crop_h, crop_w = crop_size
+    height, width = image.shape[:2]
+    if height < crop_h or width < crop_w:
+        pad_h = max(crop_h - height, 0)
+        pad_w = max(crop_w - width, 0)
+        top = pad_h // 2
+        bottom = pad_h - top
+        left = pad_w // 2
+        right = pad_w - left
+        image = np.pad(image, ((top, bottom), (left, right), (0, 0)), mode='reflect')
+        mask = np.pad(mask, ((top, bottom), (left, right), (0, 0)), mode='constant', constant_values=0.0)
+        polylines = [np.asarray(polyline, dtype=np.float32) + np.asarray([left, top], dtype=np.float32) for polyline in polylines]
+        height, width = image.shape[:2]
+    max_top = height - crop_h
+    max_left = width - crop_w
+    top = int(rng.integers(0, max_top + 1)) if max_top > 0 else 0
+    left = int(rng.integers(0, max_left + 1)) if max_left > 0 else 0
+    cropped_image = image[top:top + crop_h, left:left + crop_w].copy()
+    cropped_mask = mask[top:top + crop_h, left:left + crop_w].copy()
+    shifted = [np.asarray(polyline, dtype=np.float32) - np.asarray([left, top], dtype=np.float32) for polyline in polylines]
+    return cropped_image, cropped_mask, clip_polylines_to_rect(shifted, crop_w, crop_h)
+
+
 def letterbox_image_and_polylines(image: np.ndarray, polylines: List[np.ndarray], output_size: Tuple[int, int]) -> Tuple[np.ndarray, List[np.ndarray]]:
     target_h, target_w = output_size
     src_h, src_w = image.shape[:2]
@@ -254,6 +328,32 @@ def letterbox_image_and_polylines(image: np.ndarray, polylines: List[np.ndarray]
     padded = _constant_pad_image(resized, pad_top=pad_top, pad_bottom=pad_bottom, pad_left=pad_left, pad_right=pad_right)
     shifted = [polyline + np.asarray([pad_left, pad_top], dtype=np.float32) for polyline in scaled_polylines]
     return padded, shifted
+
+
+def letterbox_image_mask_and_polylines(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    output_size: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+    if mask.ndim == 2:
+        mask = mask[..., None]
+    target_h, target_w = output_size
+    src_h, src_w = image.shape[:2]
+    scale = min(target_h / max(src_h, 1), target_w / max(src_w, 1))
+    new_h = max(1, int(round(src_h * scale)))
+    new_w = max(1, int(round(src_w * scale)))
+    resized = _resize_image(image, new_h, new_w)
+    resized_mask = _resize_mask(mask, new_h, new_w)
+    scaled_polylines = _scale_polylines(polylines, new_w / max(src_w, 1), new_h / max(src_h, 1))
+    pad_top = (target_h - new_h) // 2
+    pad_bottom = target_h - new_h - pad_top
+    pad_left = (target_w - new_w) // 2
+    pad_right = target_w - new_w - pad_left
+    padded = _constant_pad_image(resized, pad_top=pad_top, pad_bottom=pad_bottom, pad_left=pad_left, pad_right=pad_right)
+    padded_mask = np.pad(resized_mask, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode='constant', constant_values=0.0)
+    shifted = [polyline + np.asarray([pad_left, pad_top], dtype=np.float32) for polyline in scaled_polylines]
+    return padded, (padded_mask > 0.5).astype(np.float32), shifted
 
 
 def build_targets_from_polylines(
@@ -359,3 +459,61 @@ def prepare_eval_sample(
     image, polylines = letterbox_image_and_polylines(image, polylines, output_size=output_size)
     targets = build_targets_from_polylines(polylines, image_shape=image.shape[:2], target_degree=target_degree, min_curve_length=min_curve_length, max_targets=max_targets)
     return image, targets
+
+
+def prepare_training_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    image_size,
+    target_degree: int,
+    min_curve_length: float,
+    max_targets: int,
+    augment_cfg: Dict,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
+    resize_scale = float(rng.uniform(resize_min, resize_max))
+    scale_min, scale_max = augment_cfg.get('affine_scale_range', [0.95, 1.05])
+    affine_scale = float(rng.uniform(scale_min, scale_max))
+    safe_resize_multiplier = resize_scale / max(affine_scale, 1e-6)
+    image, polylines = resize_with_aspect_ratio(image, polylines, output_size=output_size, scale_multiplier=safe_resize_multiplier)
+    resized_h, resized_w = image.shape[:2]
+    mask = _resize_mask(mask if mask.ndim == 3 else mask[..., None], resized_h, resized_w)
+
+    if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
+        image, polylines = apply_horizontal_flip(image, polylines)
+        mask = mask[:, ::-1].copy()
+    if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
+        image, polylines = apply_vertical_flip(image, polylines)
+        mask = mask[::-1].copy()
+
+    max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
+    angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
+    translate_ratio = float(augment_cfg.get('affine_max_translate_ratio', 0.0))
+    translate_x = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[1])
+    translate_y = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[0])
+    matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
+    image = apply_affine_to_image(image, matrix_xy)
+    mask = apply_affine_to_mask(mask, matrix_xy)
+    polylines = apply_affine_to_polylines(polylines, matrix_xy)
+
+    image, mask, polylines = random_crop_image_mask_and_polylines(image, mask, polylines, crop_size=output_size, rng=rng)
+    targets = build_targets_from_polylines(polylines, image_shape=image.shape[:2], target_degree=target_degree, min_curve_length=min_curve_length, max_targets=max_targets)
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
+def prepare_eval_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    image_size,
+    target_degree: int,
+    min_curve_length: float,
+    max_targets: int,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    image, mask, polylines = letterbox_image_mask_and_polylines(image, mask, polylines, output_size=output_size)
+    targets = build_targets_from_polylines(polylines, image_shape=image.shape[:2], target_degree=target_degree, min_curve_length=min_curve_length, max_targets=max_targets)
+    return image, (mask > 0.5).astype(np.float32), targets
