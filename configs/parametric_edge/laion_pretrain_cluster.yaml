@@ -4,8 +4,8 @@ data:
   include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
-  batch_size: 32
-  val_batch_size: 32
+  batch_size: 8
+  val_batch_size: 8
   num_workers: 16
   pin_memory: true
   persistent_workers: true
@@ -59,12 +59,12 @@ data:
 model:
   input_channels: 3
   target_degree: 5
-  hidden_dim: 384
-  num_queries: 640
-  nheads: 12
+  hidden_dim: 320
+  num_queries: 512
+  nheads: 10
   num_encoder_layers: 4
   num_decoder_layers: 6
-  dim_feedforward: 1536
+  dim_feedforward: 1280
   dropout: 0.0
   num_feature_levels: 4
   num_sampling_points: 8
@@ -144,13 +144,13 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: 2
   strategy: ddp_find_unused_parameters_true
-  precision: 16-mixed
-  accumulate_grad_batches: 4
+  precision: 32-true
+  accumulate_grad_batches: 16
   log_every_n_steps: 10
   gradient_clip_val: 0.1
   deterministic: false
@@ -175,14 +175,15 @@ logging:
     enabled: true
     offline: false
     project: parametric-edge-prediction
-    name: laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+    name: laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32
     group: laion-cluster-pretrain
     job_type: train
     tags:
       - laion
       - cluster
       - 2gpu
-      - q640
+      - q512
       - effective-batch-256
       - lr5e-5
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q640-eb256-lr5e5/wandb
+      - fp32
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32/wandb

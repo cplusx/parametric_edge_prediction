@@ -121,7 +121,7 @@ Current intended command on cluster:
   --time 00:20:00 \
   --gpus 2 \
   --nodelist fstsvr11 \
-  --run-name laion-pretrain-h100-2gpu-q640-eb256-lr5e5
+  --run-name laion-pretrain-h100-2gpu-q512-eb256-lr5e5-fp32
 ```
 
 Runtime rule:
@@ -129,6 +129,8 @@ Runtime rule:
 - Change training/data settings in the committed config file first.
 - The submit script may only add per-run output paths and the W&B run name.
 - Do not generate cluster-only data/training overrides.
+- Current cluster pretraining uses full FP32, not mixed precision.
+- Current conservative FP32 profile uses `batch_size: 8`, `accumulate_grad_batches: 16`, `num_queries: 512`, and `hidden_dim: 320`.
 
 Important reset on 2026-03-14:
 
