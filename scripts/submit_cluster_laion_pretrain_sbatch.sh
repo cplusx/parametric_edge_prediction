@@ -132,8 +132,10 @@ cat > "$SBATCH_FILE" <<EOF
 ${SBATCH_ARGS[*]}
 
 set -euo pipefail
+set +u
 source "\$HOME/anaconda3/etc/profile.d/conda.sh"
 conda activate ${CONDA_ENV}
+set -u
 export PYTHONUNBUFFERED=1
 export WANDB_MODE=offline
 cd ${REPO_ROOT}
