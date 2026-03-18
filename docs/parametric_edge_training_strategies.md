@@ -222,6 +222,96 @@ Effect:
 
 - Improves score calibration pressure without changing the geometry heads.
 
+## Synthetic Clutter Down-Weighting
+
+Status:
+
+- Explored, but **not adopted into the training path**.
+- The training code currently does **not** apply clutter-based per-curve down-weighting.
+
+Motivation:
+
+- In synthetic data, some regions produce many small, heavily overlapping loops or fragments.
+- Those regions can dominate the regression signal even when the global structure is already correct.
+- We want to reduce the matched regression pressure only for those local clutter regions, not suppress the whole sample.
+
+Heuristics tried:
+
+1. `aggressive`
+- Combined overlap density, neighbor count, shortness, small area, and curvature with a strong additive score.
+- Result:
+  - Clearly too aggressive.
+  - It down-weighted many normal structural curves, not only clutter.
+
+2. `overlap_only`
+- Used only local overlap and neighbor density.
+- Result:
+  - Better than `aggressive`, but still too broad.
+  - It often highlighted large overlapping structural boundaries that we still want to supervise strongly.
+
+3. `balanced`
+- Requires all of the following to be present together:
+  - local overlap
+  - local neighbor density
+  - smallness / shortness
+  - mild curvature modulation
+- Result:
+  - Much closer to the intended behavior.
+  - It leaves normal object contours mostly untouched.
+  - It highlights compact, locally dense, overlapping micro-curve regions more selectively.
+
+How we compared them:
+
+- Comparison script:
+  - [scripts/compare_clutter_weight_heuristics.py](../scripts/compare_clutter_weight_heuristics.py)
+- Representative remote LAION cache samples were pulled back locally and rendered side-by-side.
+- We inspected both:
+  - simpler structured samples
+  - highly cluttered synthetic samples
+
+Representative findings:
+
+- On clean samples like `batch1_000000`, `aggressive` down-weighted almost everything, while `balanced` only touched a few local overlap points.
+- On medium-complexity samples like `batch2_150890`, `balanced` highlighted the small overlapping branch cluster near the left-side junctions without blanketing the whole object.
+- On dense clutter samples like `batch1_024442` and `batch2_125853`, `balanced` highlighted a subset of the locally packed micro-loops, while `aggressive` and `overlap_only` highlighted far too much of the image.
+
+Summary statistics from the comparison run:
+
+- `batch1_000000`
+  - `aggressive`: `low=51/51`
+  - `overlap_only`: `low=18/51`
+  - `balanced`: `low=8/51`
+- `batch2_150890`
+  - `aggressive`: `low=96/96`
+  - `overlap_only`: `low=25/96`
+  - `balanced`: `low=11/96`
+- `batch1_024442`
+  - `aggressive`: `low=967/967`
+  - `overlap_only`: `low=392/967`
+  - `balanced`: `low=64/967`
+- `batch2_125853`
+  - `aggressive`: `low=858/858`
+  - `overlap_only`: `low=579/858`
+  - `balanced`: `low=157/858`
+
+Outcome:
+
+- `balanced` was the most reasonable of the tried heuristics.
+- However, even `balanced` still did not align consistently enough with human judgment on the highlighted clutter regions.
+- In particular, some visually acceptable curves were still down-weighted, while some intuitively cluttered regions were not emphasized strongly enough.
+
+Current decision:
+
+- Do **not** include clutter-based match down-weighting in training for now.
+- Keep the comparison script and visual analysis as reference material for future work.
+
+Reference artifacts:
+
+- Comparison script:
+  - [scripts/compare_clutter_weight_heuristics.py](../scripts/compare_clutter_weight_heuristics.py)
+- Example comparison outputs live under:
+  - `outputs/remote_cache_debug_samples/clutter_strategy_compare/`
+
 ## Graph-First Data Pipeline
 
 Current implementation:
