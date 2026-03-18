@@ -49,13 +49,7 @@ class TopKPositiveLoss(BaseLossComponent):
         batch_size, num_groups, num_queries = grouped_logits.shape[:3]
         flat_logits = grouped_logits.reshape(batch_size, num_groups * num_queries, -1)
         flat_curves = grouped_curves.reshape(batch_size, num_groups * num_queries, grouped_curves.shape[-2], grouped_curves.shape[-1])
-        runtime_outputs = {
-            'pred_curve_extent': None,
-        }
-        grouped_extent = aux_outputs.get('group_pred_curve_extent')
-        if grouped_extent is not None:
-            runtime_outputs['pred_curve_extent'] = grouped_extent.reshape(batch_size, num_groups * num_queries)
-        return flat_logits, flat_curves, runtime_outputs
+        return flat_logits, flat_curves, {}
 
     def _select_group_topk_matches(
         self,
@@ -135,7 +129,7 @@ class TopKPositiveLoss(BaseLossComponent):
     def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[dict]) -> torch.Tensor:
         loss_cfg = self.config['loss']
         aux_outputs = outputs.get('aux_outputs', [])
-        if not aux_outputs or outputs.get('pred_group_count', 1) <= 1:
+        if not aux_outputs:
             zero = outputs['pred_logits'].sum() * 0.0
             return {
                 'loss_topk_pos': zero,
@@ -146,14 +140,13 @@ class TopKPositiveLoss(BaseLossComponent):
                 'loss_topk_pos_bbox': zero,
                 'loss_topk_pos_giou': zero,
                 'loss_topk_pos_curve_dist': zero,
-                'loss_topk_pos_extent': zero,
             }
 
         layer_summaries = []
         for layer_idx, aux in enumerate(aux_outputs):
             grouped_logits = aux.get('group_pred_logits')
             grouped_curves = aux.get('group_pred_curves')
-            if grouped_logits is None or grouped_curves is None or grouped_logits.shape[1] <= 1:
+            if grouped_logits is None or grouped_curves is None:
                 continue
             topk_per_target = self._layer_topk_per_target(layer_idx)
             if self._topk_truncation_enabled() and topk_per_target <= 0:
@@ -183,7 +176,6 @@ class TopKPositiveLoss(BaseLossComponent):
                 'loss_topk_pos_bbox': zero,
                 'loss_topk_pos_giou': zero,
                 'loss_topk_pos_curve_dist': zero,
-                'loss_topk_pos_extent': zero,
             }
 
         return {
@@ -195,7 +187,6 @@ class TopKPositiveLoss(BaseLossComponent):
             'loss_topk_pos_bbox': torch.stack([summary['loss_bbox'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_giou': torch.stack([summary['loss_giou'] for summary in layer_summaries]).mean(),
             'loss_topk_pos_curve_dist': torch.stack([summary['loss_curve_dist'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_extent': torch.stack([summary['loss_extent'] for summary in layer_summaries]).mean(),
         }
 
 
@@ -319,7 +310,6 @@ class OneToManyLoss(BaseLossComponent):
                 'loss_om_bbox': zero,
                 'loss_om_giou': zero,
                 'loss_om_curve_dist': zero,
-                'loss_om_extent': zero,
             }
         loss_cfg = self.config['loss']
         om_weight_overrides = {
@@ -330,7 +320,6 @@ class OneToManyLoss(BaseLossComponent):
             'bbox_weight': float(loss_cfg.get('one_to_many_bbox_weight', loss_cfg.get('bbox_weight', 2.0))),
             'giou_weight': float(loss_cfg.get('one_to_many_giou_weight', loss_cfg.get('giou_weight', 1.0))),
             'curve_distance_weight': float(loss_cfg.get('one_to_many_curve_distance_weight', loss_cfg.get('curve_distance_weight', 2.0))),
-            'extent_weight': float(loss_cfg.get('one_to_many_extent_weight', loss_cfg.get('extent_weight', 0.0))),
         }
         group_summaries = []
         for group_idx in range(1, grouped_logits.shape[1]):
@@ -346,16 +335,13 @@ class OneToManyLoss(BaseLossComponent):
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
             )
-            group_outputs = {
-                'pred_curve_extent': None if outputs.get('group_pred_curve_extent') is None else outputs['group_pred_curve_extent'][:, group_idx],
-            }
             group_summaries.append(
                 self.matched_curve_loss(
                     grouped_curves[:, group_idx],
                     grouped_logits[:, group_idx],
                     targets,
                     group_indices,
-                    group_outputs,
+                    {},
                     loss_weight_overrides=om_weight_overrides,
                 )
             )
@@ -370,5 +356,4 @@ class OneToManyLoss(BaseLossComponent):
             'loss_om_bbox': torch.stack([summary['loss_bbox'] for summary in group_summaries]).mean(),
             'loss_om_giou': torch.stack([summary['loss_giou'] for summary in group_summaries]).mean(),
             'loss_om_curve_dist': torch.stack([summary['loss_curve_dist'] for summary in group_summaries]).mean(),
-            'loss_om_extent': torch.stack([summary['loss_extent'] for summary in group_summaries]).mean(),
         }

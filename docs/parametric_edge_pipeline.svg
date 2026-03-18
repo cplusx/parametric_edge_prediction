@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200" role="img" aria-labelledby="title desc">
+  <title id="title">Parametric Edge Prediction Pipeline</title>
+  <desc id="desc">Clear paper-style pipeline diagram for the current parametric edge prediction model. It highlights the DINOv2 multi-scale backbone, transformer encoder, proposal-based query initialization, deformable decoder, and differentiable curve supervision.</desc>
+  <defs>
+    <style>
+      .bg { fill: #faf8f2; }
+      .frame { fill: #fffdfa; stroke: #d6cebc; stroke-width: 2; rx: 22; ry: 22; }
+      .box { fill: #ffffff; stroke: #232323; stroke-width: 2; rx: 16; ry: 16; }
+      .blue { fill: #edf5ff; }
+      .green { fill: #edf8ef; }
+      .amber { fill: #fff5df; }
+      .violet { fill: #f6efff; }
+      .red { fill: #fff1f1; }
+      .gray { fill: #f5f5f5; stroke-dasharray: 8 7; }
+      .mini { fill: #fcfcfc; stroke: #8b8b8b; stroke-width: 1.2; rx: 10; ry: 10; }
+      .title { font: 700 34px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #121212; }
+      .subtitle { font: 500 17px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #5b5345; }
+      .section { font: 700 22px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #1f2937; }
+      .label { font: 700 21px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #111827; }
+      .body { font: 500 16px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #374151; }
+      .mono { font: 600 15px 'Courier New', monospace; fill: #334155; }
+      .small { font: 500 14px 'Helvetica Neue', Helvetica, Arial, sans-serif; fill: #5b5345; }
+      .arrow { stroke: #3a3a3a; stroke-width: 2.8; fill: none; marker-end: url(#arrowhead); }
+      .soft { stroke: #6b7280; stroke-width: 2; fill: none; marker-end: url(#arrowheadSoft); }
+      .dash { stroke-dasharray: 8 7; }
+    </style>
+    <marker id="arrowhead" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto">
+      <polygon points="0,0 12,5 0,10" fill="#3a3a3a" />
+    </marker>
+    <marker id="arrowheadSoft" markerWidth="12" markerHeight="10" refX="10" refY="5" orient="auto">
+      <polygon points="0,0 12,5 0,10" fill="#6b7280" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1200"/>
+  <text x="68" y="64" class="title">Parametric Edge Prediction Pipeline</text>
+  <text x="68" y="97" class="subtitle">Current LAION pretraining model: DINOv2 ViT-S/14 backbone, hidden dim 320, 4-layer encoder, 6-layer deformable decoder, degree-5 Bezier curve outputs</text>
+
+  <rect class="frame" x="44" y="122" width="1712" height="1024"/>
+
+  <text x="84" y="170" class="section">A. Visual backbone and memory construction</text>
+  <rect class="box blue" x="82" y="196" width="220" height="128"/>
+  <text x="108" y="234" class="label">Input</text>
+  <text x="108" y="264" class="body">RGB image, 256 x 256</text>
+  <text x="108" y="290" class="body">Synthetic LAION edge sample</text>
+
+  <rect class="box blue" x="358" y="196" width="322" height="128"/>
+  <text x="384" y="234" class="label">DINOv2 pyramid backbone</text>
+  <text x="384" y="264" class="body">ViT-S/14, embed dim 384</text>
+  <text x="384" y="290" class="body">Intermediate blocks: 2, 5, 8, 11</text>
+
+  <rect class="mini" x="750" y="188" width="188" height="54"/>
+  <text x="778" y="222" class="mono">320 x 18 x 18</text>
+  <rect class="mini" x="750" y="252" width="188" height="54"/>
+  <text x="786" y="286" class="mono">320 x 9 x 9</text>
+  <rect class="mini" x="750" y="316" width="188" height="54"/>
+  <text x="786" y="350" class="mono">320 x 5 x 5</text>
+  <rect class="mini" x="750" y="380" width="188" height="54"/>
+  <text x="786" y="414" class="mono">320 x 3 x 3</text>
+
+  <rect class="box green" x="1000" y="196" width="290" height="128"/>
+  <text x="1026" y="234" class="label">Flatten + positional encoding</text>
+  <text x="1026" y="264" class="body">Sine position encoding</text>
+  <text x="1026" y="290" class="body">Level embedding + token concat</text>
+  <text x="1026" y="316" class="mono">Total memory tokens: 439</text>
+
+  <rect class="box green" x="1340" y="196" width="354" height="128"/>
+  <text x="1366" y="234" class="label">Transformer encoder</text>
+  <text x="1366" y="264" class="body">4 layers, global self-attention</text>
+  <text x="1366" y="290" class="body">d_model = 320, heads = 10, FFN = 1280</text>
+  <text x="1366" y="316" class="mono">Encoder params: 4.93M</text>
+
+  <text x="84" y="492" class="section">B. Query construction</text>
+  <rect class="box amber" x="82" y="518" width="356" height="164"/>
+  <text x="108" y="556" class="label">Two-stage proposal branch</text>
+  <text x="108" y="586" class="body">Proposal score head on encoder memory</text>
+  <text x="108" y="612" class="body">Proposal ref head: memory -&gt; 2D reference</text>
+  <text x="108" y="638" class="body">Proposal curve head: memory -&gt; 6 control points</text>
+  <text x="108" y="664" class="mono">Select top-512 proposals</text>
+
+  <rect class="box amber" x="486" y="518" width="304" height="164"/>
+  <text x="512" y="556" class="label">Learned content branch</text>
+  <text x="512" y="586" class="body">Query content embedding table</text>
+  <text x="512" y="612" class="body">Fuse proposal memory with learned content</text>
+  <text x="512" y="638" class="body">Grouped training: up to 4 groups</text>
+  <text x="512" y="664" class="mono">512 queries per group</text>
+
+  <rect class="box gray" x="838" y="518" width="286" height="164"/>
+  <text x="864" y="556" class="label">DN branch, training only</text>
+  <text x="864" y="586" class="body">Noisy curve anchors and labels</text>
+  <text x="864" y="612" class="body">4 denoising groups</text>
+  <text x="864" y="638" class="body">Prepended before main queries</text>
+  <text x="864" y="664" class="small">Used for optimization stability, not inference</text>
+
+  <rect class="box amber" x="1176" y="518" width="518" height="164"/>
+  <text x="1202" y="556" class="label">Initial decoder state</text>
+  <text x="1202" y="586" class="body">Hidden state starts from zeros</text>
+  <text x="1202" y="612" class="body">Query position = MLP(curve anchor)</text>
+  <text x="1202" y="638" class="body">2D attention reference = MLP(curve anchor center)</text>
+  <text x="1202" y="664" class="mono">Curve dim = 12 = 6 control points x 2</text>
+
+  <text x="84" y="760" class="section">C. Deformable decoding and outputs</text>
+  <rect class="box violet" x="82" y="786" width="790" height="196"/>
+  <text x="108" y="824" class="label">Deformable decoder stack</text>
+  <text x="108" y="854" class="body">6 layers</text>
+  <text x="108" y="880" class="body">Self-attention + multi-scale deformable cross-attention + FFN</text>
+  <text x="108" y="906" class="body">Cross-attention uses 4 levels x 8 sampling points</text>
+  <text x="108" y="932" class="mono">Decoder params: 12.33M</text>
+
+  <rect class="mini" x="454" y="826" width="136" height="46"/>
+  <text x="498" y="856" class="mono">layer 1</text>
+  <rect class="mini" x="610" y="826" width="136" height="46"/>
+  <text x="654" y="856" class="mono">layer 2</text>
+  <rect class="mini" x="454" y="886" width="136" height="46"/>
+  <text x="498" y="916" class="mono">layer 3</text>
+  <rect class="mini" x="610" y="886" width="136" height="46"/>
+  <text x="654" y="916" class="mono">layer 4</text>
+  <rect class="mini" x="454" y="946" width="136" height="46"/>
+  <text x="498" y="976" class="mono">layer 5</text>
+  <rect class="mini" x="610" y="946" width="136" height="46"/>
+  <text x="654" y="976" class="mono">layer 6</text>
+
+  <rect class="box red" x="934" y="786" width="332" height="196"/>
+  <text x="960" y="824" class="label">Prediction heads</text>
+  <text x="960" y="854" class="body">Class head: 320 -&gt; 2 logits</text>
+  <text x="960" y="880" class="body">Curve head: 320 -&gt; 12 values</text>
+  <text x="960" y="906" class="body">Per-layer anchor refinement heads</text>
+  <text x="960" y="932" class="body">Curve anchors are refined at every decoder layer</text>
+  <text x="960" y="958" class="small">No separate extent branch in the current model</text>
+
+  <rect class="box red" x="1318" y="786" width="376" height="196"/>
+  <text x="1344" y="824" class="label">Losses and outputs</text>
+  <text x="1344" y="854" class="body">Main outputs: logits + 6 control points</text>
+  <text x="1344" y="880" class="body">Aux outputs from first 5 decoder layers</text>
+  <text x="1344" y="906" class="body">Differentiable sampled-curve distance to GT</text>
+  <text x="1344" y="932" class="body">Endpoint, control-point, box / GIoU, DN, grouped losses</text>
+  <text x="1344" y="958" class="body">No separate extent loss in the current training path</text>
+
+  <rect class="frame" x="82" y="1018" width="1612" height="92"/>
+  <text x="110" y="1054" class="label">Important interpretation</text>
+  <text x="110" y="1084" class="body">The main geometric supervision is differentiable through sampled Bezier curves derived from the predicted control points; there is no separate extent branch in the current model.</text>
+
+  <path class="arrow" d="M302 260 L358 260"/>
+  <path class="arrow" d="M680 260 L750 260"/>
+  <path class="arrow" d="M938 260 L1000 260"/>
+  <path class="arrow" d="M1290 260 L1340 260"/>
+
+  <path class="arrow" d="M1516 324 L1516 420 L260 420 L260 518"/>
+  <path class="arrow" d="M1516 324 L1516 446 L638 446 L638 518"/>
+  <path class="soft dash" d="M1516 324 L1516 472 L980 472 L980 518"/>
+
+  <path class="arrow" d="M438 600 L486 600"/>
+  <path class="soft dash" d="M790 600 L838 600"/>
+  <path class="arrow" d="M1124 600 L1176 600"/>
+
+  <path class="arrow" d="M1434 682 L1434 732 L478 732 L478 786"/>
+  <path class="arrow" d="M872 884 L934 884"/>
+  <path class="arrow" d="M1266 884 L1318 884"/>
+</svg>

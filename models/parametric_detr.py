@@ -183,8 +183,6 @@ class ParametricDETR(nn.Module):
         self.query_source = str(model_cfg.get('query_source', 'two_stage'))
         self.curve_parameterization = str(model_cfg.get('curve_parameterization', 'endpoint_offsets'))
         self.curve_delta_scale = float(model_cfg.get('curve_delta_scale', 0.35))
-        self.curve_extent_min = float(model_cfg.get('curve_extent_min', 0.2))
-        self.curve_extent_max = float(model_cfg.get('curve_extent_max', 1.8))
         self.interior_delta_ratio = float(model_cfg.get('interior_delta_ratio', 0.35))
         self.group_addback_enabled = (
             float(config['loss'].get('one_to_many_weight', 0.0)) > 0.0
@@ -239,7 +237,6 @@ class ParametricDETR(nn.Module):
 
         self.class_head = nn.Linear(self.hidden_dim, 2)
         self.curve_head = MLP(self.hidden_dim, self.hidden_dim, self.curve_dim, num_layers=3)
-        self.curve_extent_head = nn.Linear(self.hidden_dim, 1)
         self.curve_anchor_heads = nn.ModuleList([MLP(self.hidden_dim, self.hidden_dim, self.curve_dim, num_layers=3) for _ in range(self.num_decoder_layers)])
 
         nn.init.constant_(self.class_head.bias[0], self.object_bias)
@@ -417,21 +414,17 @@ class ParametricDETR(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         logits = self.class_head(hidden)
         curve_raw = self.curve_head(hidden)
-        extent_logits = self.curve_extent_head(hidden).squeeze(-1)
-        extent_scale = self.curve_extent_min + (self.curve_extent_max - self.curve_extent_min) * torch.sigmoid(extent_logits)
         anchor_logits = inverse_sigmoid(curve_anchor.reshape(hidden.shape[0], hidden.shape[1], self.curve_dim))
         curves = torch.sigmoid(anchor_logits + self._curve_delta_logits(curve_raw)).reshape(hidden.shape[0], hidden.shape[1], self.num_control_points, 2)
 
         main_logits = logits[:, dn_count:]
         main_curves = curves[:, dn_count:]
-        main_extent = extent_scale[:, dn_count:]
         main_hidden = hidden[:, dn_count:]
         main_refs = ref_points[:, dn_count:]
         main_anchors = curve_anchor[:, dn_count:]
 
         grouped_logits = main_logits.reshape(main_logits.shape[0], query_group_count, self.num_queries, -1)
         grouped_curves = main_curves.reshape(main_curves.shape[0], query_group_count, self.num_queries, self.num_control_points, 2)
-        grouped_extent = main_extent.reshape(main_extent.shape[0], query_group_count, self.num_queries)
         grouped_hidden = main_hidden.reshape(main_hidden.shape[0], query_group_count, self.num_queries, -1)
         grouped_refs = main_refs.reshape(main_refs.shape[0], query_group_count, self.num_queries, 2)
         grouped_anchors = main_anchors.reshape(main_anchors.shape[0], query_group_count, self.num_queries, self.num_control_points, 2)
@@ -439,13 +432,11 @@ class ParametricDETR(nn.Module):
         output = {
             'pred_logits': grouped_logits[:, 0],
             'pred_curves': grouped_curves[:, 0],
-            'pred_curve_extent': grouped_extent[:, 0],
             'pred_query_hidden': grouped_hidden[:, 0],
             'pred_ref_points': grouped_refs[:, 0],
             'pred_curve_anchors': grouped_anchors[:, 0],
             'group_pred_logits': grouped_logits,
             'group_pred_curves': grouped_curves,
-            'group_pred_curve_extent': grouped_extent,
             'group_pred_query_hidden': grouped_hidden,
             'group_pred_ref_points': grouped_refs,
             'group_pred_curve_anchors': grouped_anchors,
@@ -455,7 +446,6 @@ class ParametricDETR(nn.Module):
         if dn_count > 0:
             output['dn_pred_logits'] = logits[:, :dn_count]
             output['dn_pred_curves'] = curves[:, :dn_count]
-            output['dn_pred_curve_extent'] = extent_scale[:, :dn_count]
             output['dn_pred_curve_anchors'] = curve_anchor[:, :dn_count]
         return output
 

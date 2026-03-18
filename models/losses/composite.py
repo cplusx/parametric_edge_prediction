@@ -17,7 +17,6 @@ WEIGHTED_TERM_SPECS = {
             'bbox': 'bbox_weight',
             'giou': 'giou_weight',
             'curve_dist': 'curve_distance_weight',
-            'extent': 'extent_weight',
         },
     },
     'om': {
@@ -31,7 +30,6 @@ WEIGHTED_TERM_SPECS = {
             'bbox': 'one_to_many_bbox_weight',
             'giou': 'one_to_many_giou_weight',
             'curve_dist': 'one_to_many_curve_distance_weight',
-            'extent': 'one_to_many_extent_weight',
         },
     },
     'topk_pos': {
@@ -45,7 +43,6 @@ WEIGHTED_TERM_SPECS = {
             'bbox': 'bbox_weight',
             'giou': 'giou_weight',
             'curve_dist': 'curve_distance_weight',
-            'extent': 'extent_weight',
         },
     },
 }

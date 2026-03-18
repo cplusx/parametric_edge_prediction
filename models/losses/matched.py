@@ -80,8 +80,6 @@ class MatchedCurveLoss(BaseLossComponent):
         matched_tgt_curves = []
         matched_pred_boxes = []
         matched_tgt_boxes = []
-        matched_pred_extents = []
-        matched_tgt_norm_lengths = []
         matched_pair_weights = []
         for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
             if src_idx.numel() == 0:
@@ -91,9 +89,6 @@ class MatchedCurveLoss(BaseLossComponent):
             matched_tgt_curves.append(targets[batch_idx]['curves'][tgt_idx].to(device))
             matched_pred_boxes.append(curve_boxes_xyxy(pred_curves[batch_idx, src_idx]))
             matched_tgt_boxes.append(targets[batch_idx]['boxes'][tgt_idx].to(device))
-            if runtime_outputs.get('pred_curve_extent') is not None:
-                matched_pred_extents.append(runtime_outputs['pred_curve_extent'][batch_idx, src_idx])
-                matched_tgt_norm_lengths.append(targets[batch_idx]['curve_norm_lengths'][tgt_idx].to(device))
             if match_weights is not None:
                 matched_pair_weights.append(match_weights[batch_idx].to(device=device, dtype=pred_logits.dtype))
         loss_ce = self.classification(pred_logits, target_classes, query_weights=query_weights)
@@ -144,12 +139,6 @@ class MatchedCurveLoss(BaseLossComponent):
             loss_curve_dist = weighted_mean(curve_dist, curve_weights)
             loss_curve_chamfer = weighted_mean(curve_chamfer, curve_weights)
             loss_curve_length = weighted_mean(curve_length, curve_weights)
-            if matched_pred_extents:
-                pred_extent = torch.cat(matched_pred_extents, dim=0)
-                tgt_norm_length = torch.cat(matched_tgt_norm_lengths, dim=0)
-                loss_extent = weighted_mean(torch.abs(pred_extent - tgt_norm_length), ctrl_weights)
-            else:
-                loss_extent = pred_curves.sum() * 0.0
         else:
             zero = pred_curves.sum() * 0.0
             loss_ctrl = zero
@@ -159,7 +148,6 @@ class MatchedCurveLoss(BaseLossComponent):
             loss_curve_dist = zero
             loss_curve_chamfer = zero
             loss_curve_length = zero
-            loss_extent = zero
         total = (
             float(weight_cfg.get('ce_weight', 1.0)) * loss_ce
             + float(weight_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
@@ -168,7 +156,6 @@ class MatchedCurveLoss(BaseLossComponent):
             + float(weight_cfg.get('bbox_weight', 2.0)) * loss_bbox
             + float(weight_cfg.get('giou_weight', 1.0)) * loss_giou
             + float(weight_cfg.get('curve_distance_weight', 2.0)) * loss_curve_dist
-            + float(weight_cfg.get('extent_weight', 0.0)) * loss_extent
         )
         return {
             'loss_total': total,
@@ -181,5 +168,4 @@ class MatchedCurveLoss(BaseLossComponent):
             'loss_curve_dist': loss_curve_dist,
             'loss_curve_chamfer': loss_curve_chamfer,
             'loss_curve_length': loss_curve_length,
-            'loss_extent': loss_extent,
         }

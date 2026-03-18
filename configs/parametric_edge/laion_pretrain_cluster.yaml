@@ -76,8 +76,6 @@ model:
   query_source: two_stage
   curve_parameterization: endpoint_offsets
   curve_delta_scale: 0.35
-  curve_extent_min: 0.2
-  curve_extent_max: 1.8
   interior_delta_ratio: 0.35
   object_bias: -2.0
   no_object_bias: 2.0
@@ -103,7 +101,6 @@ loss:
   giou_weight: 0.15
   curve_distance_weight: 7.5
   curve_distance_length_weight: 0.25
-  extent_weight: 1.0
   no_object_weight: 1.0
   dynamic_class_balance: true
   aux_weight: 0.2
@@ -118,7 +115,6 @@ loss:
   one_to_many_bbox_weight: 0.0
   one_to_many_giou_weight: 0.15
   one_to_many_curve_distance_weight: 7.5
-  one_to_many_extent_weight: 1.0
   topk_positive_enabled: true
   topk_positive_per_gt: 2
   topk_positive_layer_k: [2, 2, 2, 2, 2]
