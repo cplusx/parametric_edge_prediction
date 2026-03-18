@@ -44,7 +44,7 @@ Config loading behavior:
 Current cluster LAION pretraining entrypoint:
 
 - Config: [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
-- Submit script: [scripts/submit_cluster_laion_pretrain_sbatch.sh](../scripts/submit_cluster_laion_pretrain_sbatch.sh)
+- Submission mode: direct `sbatch` only
 
 ## Output Conventions
 
@@ -116,22 +116,36 @@ Config:
 Current intended command on cluster:
 
 ```bash
-./scripts/submit_cluster_laion_pretrain_sbatch.sh \
-  --partition gbunchQ \
-  --gpus 4 \
-  --run-name laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
+sbatch <<'EOF'
+#!/usr/bin/env bash
+#SBATCH -J laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
+#SBATCH -p gbunchQ
+#SBATCH --gres=gpu:4
+#SBATCH -c 64
+#SBATCH --mem=256G
+#SBATCH -t 3-00:00:00
+#SBATCH -o ~/cluster_runs/parametric_edge_prediction/%x-%j.out
+#SBATCH -e ~/cluster_runs/parametric_edge_prediction/%x-%j.err
+
+set -euo pipefail
+source "$HOME/anaconda3/etc/profile.d/conda.sh"
+conda activate diffusers
+cd ~/parametric_edge_prediction
+python train.py --config configs/parametric_edge/laion_pretrain_cluster.yaml
+EOF
 ```
 
 Runtime rule:
 
 - Change training/data settings in the committed config file first.
-- The submit script may only add per-run output paths and the W&B run name.
-- Do not generate cluster-only data/training overrides.
+- Do not introduce a local wrapper submit script for this repo.
+- Use plain `sbatch` scripts or inline `sbatch <<'EOF' ... EOF` directly on cluster.
+- Do not generate cluster-only data/training overrides unless they are explicitly required for log/output paths.
 - Current cluster pretraining uses full FP32, not mixed precision.
 - Current primary FP32 cluster profile uses `batch_size: 16`, `accumulate_grad_batches: 4`, `num_queries: 512`, and `hidden_dim: 320` on 4 GPUs.
 - Current committed fallback config is [configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml](../configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml), which keeps `batch_size: 16` and uses `accumulate_grad_batches: 8` on 2 GPUs.
 - LAION cluster runs log to the dedicated W&B project `laion_parametric_edge_prediction`, not the BSDS/default project.
-- When `--time` is omitted, the submit script now uses the partition's longest allowed time limit automatically.
+- For `gbunchQ`, use `3-00:00:00` by default; for other partitions, use that partition's actual maximum time explicitly in the `sbatch` header.
 
 Important reset on 2026-03-14:
 
