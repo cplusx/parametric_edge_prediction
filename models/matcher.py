@@ -2,9 +2,13 @@ from typing import List, Tuple
 
 import torch
 from scipy.optimize import linear_sum_assignment
-
-from misc_utils.train_utils import sample_bezier_curves_torch
-from models.geometry import curve_boxes_xyxy, pairwise_curve_chamfer_cost, pairwise_generalized_box_iou
+from models.geometry import (
+    curve_boxes_xyxy,
+    pairwise_aligned_curve_l1_cost,
+    pairwise_aligned_sample_l1_cost,
+    pairwise_curve_chamfer_cost,
+    pairwise_generalized_box_iou,
+)
 
 
 def _build_cost_matrix(
@@ -19,11 +23,8 @@ def _build_cost_matrix(
     curve_match_point_count: int,
     num_curve_samples: int,
 ) -> torch.Tensor:
-    num_queries = logits.shape[0]
-    sampled_pred = sample_bezier_curves_torch(curves, num_samples=num_curve_samples)
-    ctrl_cost = torch.cdist(curves.reshape(num_queries, -1), tgt_curves.reshape(tgt_curves.shape[0], -1), p=1)
-    sampled_tgt = sample_bezier_curves_torch(tgt_curves, num_samples=num_curve_samples)
-    sample_cost_matrix = torch.cdist(sampled_pred.reshape(num_queries, -1), sampled_tgt.reshape(tgt_curves.shape[0], -1), p=1)
+    ctrl_cost = pairwise_aligned_curve_l1_cost(curves, tgt_curves)
+    sample_cost_matrix = pairwise_aligned_sample_l1_cost(curves, tgt_curves, num_samples=num_curve_samples)
     pred_boxes = curve_boxes_xyxy(curves)
     giou_cost_matrix = 1.0 - pairwise_generalized_box_iou(pred_boxes, tgt_boxes)
     curve_distance_cost_matrix = pairwise_curve_chamfer_cost(curves, tgt_curves, point_count=curve_match_point_count)

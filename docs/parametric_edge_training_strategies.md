@@ -20,6 +20,7 @@ Current default configuration now uses:
 - FPN-like multi-scale feature pyramid built from DINOv2 intermediate features
 - two-stage proposal generation from encoded memory tokens
 - grouped queries now draw from a larger proposal pool; the main group keeps the strongest proposal chunk, while auxiliary groups sample randomized non-overlapping chunks from the remaining proposal pool instead of copying the same anchors to every group
+- curve matching and geometry supervision are now direction-invariant: for each predicted/target curve pair, forward and reversed target orderings are both evaluated and the lower-cost orientation is used
 - deformable-style multi-scale decoder cross-attention
 - iterative reference-point refinement
 - denoising queries enabled
@@ -43,6 +44,121 @@ Why:
 
 - Add a lean loss-stack ablation config that keeps only main matching + DN + one-to-many, and compare it against the current full stack with `topk_positive` and `distinct` enabled.
 - Revisit whether `dynamic_class_balance` is still needed when focal loss is already active, especially if score calibration remains unstable.
+- Consider reducing the runtime cost of matching/loss by moving the heaviest pairwise geometry kernels out of Python, starting with proposal-cost construction and Hungarian-side preprocessing.
+
+## Direction-Invariant Curve Comparison
+
+Current implementation:
+
+- Parameterized curves are treated as direction-invariant during both matching and optimization.
+- For a predicted curve `P` and target curve `T`, the system now evaluates:
+  - forward ordering: `P` vs `T`
+  - reversed ordering: `P` vs `reverse(T)`
+- The lower-cost orientation is used.
+
+Where it applies:
+
+- Hungarian matching cost construction
+  - control-point cost
+  - sampled-point cost
+- Matched geometry supervision
+  - `loss_ctrl`
+  - `loss_endpoint`
+  - `loss_sample` / `loss_curve_dist`
+  - downstream `giou` uses the same chosen orientation
+
+Code:
+
+- [models/geometry.py](../models/geometry.py)
+- [models/matcher.py](../models/matcher.py)
+- [models/losses/matched.py](../models/losses/matched.py)
+
+Motivation:
+
+- The same geometric edge can be parameterized in either endpoint order.
+- Without orientation alignment, the model is penalized for a purely representational reversal rather than a real geometric error.
+
+Effect:
+
+- Matching is no longer biased against reversed-but-geometrically-correct curves.
+- Optimization pressure is better aligned with the actual visual geometry of the edge set.
+
+## Training Performance Opportunities
+
+Current practical bottlenecks:
+
+- Hungarian matching still depends on `scipy.optimize.linear_sum_assignment`, which requires cost matrices to be materialized on CPU.
+- Matching cost construction repeatedly builds pairwise geometry terms:
+  - aligned control-point L1
+  - aligned sampled-point L1
+  - pairwise curve Chamfer
+  - pairwise gIoU
+- `one-to-many` and `distinct` repeat cost-matrix-like work for grouped queries.
+- Decoder loss still performs repeated Bezier sampling through `sample_bezier_curves_torch`.
+
+Most promising acceleration targets:
+
+1. Pairwise curve cost construction
+- Files:
+  - [models/matcher.py](../models/matcher.py)
+  - [models/geometry.py](../models/geometry.py)
+- Why:
+  - These kernels are reused by main matching, aux matching, one-to-many, and top-k add-on selection.
+  - This is the highest-leverage place to speed up the current training stack without changing model behavior.
+- Best candidates for lower-level implementation:
+  - aligned control-point cost
+  - aligned sampled-point cost
+  - pairwise curve Chamfer helper
+
+2. Bezier sampling kernel
+- Files:
+  - [misc_utils/train_utils.py](../misc_utils/train_utils.py)
+  - [models/geometry.py](../models/geometry.py)
+- Why:
+  - The same curve sets are sampled multiple times for matching and loss.
+  - A fused lower-level implementation or cached sampling path could reduce repeated overhead.
+
+3. Distinct / one-to-many auxiliary preprocessing
+- File:
+  - [models/losses/regularizers.py](../models/losses/regularizers.py)
+- Why:
+  - These paths currently loop over batch, group, and target dimensions in Python.
+  - The logic is structurally correct, but it is an obvious candidate for vectorization or a lower-level helper if grouped training becomes the dominant runtime cost.
+
+What is likely *not* worth doing first:
+
+- Rewriting dataloader graph-cache reading in C/C++.
+- Rewriting the full decoder in C++.
+- Moving everything to a custom CUDA path before simplifying the pairwise geometry kernels.
+
+Recommended order if more acceleration is needed:
+
+1. Reduce repeated geometry work at the Python/Torch level where possible.
+2. Move cost-kernel helpers into a native extension or fused custom op if profiling still points there.
+3. Only then consider replacing the Hungarian solver path or introducing a different matching approximation.
+
+Current native experiment status:
+
+- A native C++ matcher-side backend has now been added for the three non-gradient pairwise geometry kernels:
+  - aligned control-point pairwise cost
+  - aligned sampled-point pairwise cost
+  - pairwise curve Chamfer helper
+- It is only used on no-grad matcher-side paths, so the differentiable training geometry losses still use the original Torch implementation.
+- The backend is lazily compiled and falls back automatically if compilation is unavailable.
+- Repro benchmark script:
+  - [scripts/benchmark_native_matcher_costs.py](../scripts/benchmark_native_matcher_costs.py)
+
+Observed steady-state benchmark on `llm_server`:
+
+- `256 x 180`: about `1.38x`
+- `512 x 220`: about `1.44x`
+- `512 x 512`: about `1.06x`
+
+Interpretation:
+
+- The native backend is numerically consistent with the Torch reference up to small floating-point noise.
+- The speedup is real but moderate, not transformative.
+- This is still worthwhile because it accelerates exactly the no-grad matcher-side path we identified as a recurring bottleneck, without interfering with gradient-based optimization.
 
 
 ## Historical BSDS Training Stack

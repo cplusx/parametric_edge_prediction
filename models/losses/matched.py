@@ -3,7 +3,13 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from models.geometry import curve_boxes_xyxy, matched_generalized_box_iou, symmetric_curve_distance
+from models.geometry import (
+    aligned_curve_l1,
+    aligned_endpoint_l1,
+    curve_boxes_xyxy,
+    matched_generalized_box_iou,
+    symmetric_curve_distance,
+)
 from models.losses.base import BaseLossComponent, balanced_class_weights, matched_curve_weights, weighted_mean
 
 
@@ -117,16 +123,16 @@ class MatchedCurveLoss(BaseLossComponent):
                 ctrl_weights = ctrl_weights * pair_weights
                 endpoint_weights = endpoint_weights * pair_weights
                 curve_weights = curve_weights * pair_weights
-            ctrl_abs = torch.abs(matched_pred_curves - matched_tgt_curves).mean(dim=(1, 2))
+            ctrl_abs, oriented_tgt_curves = aligned_curve_l1(matched_pred_curves, matched_tgt_curves)
             loss_ctrl = weighted_mean(ctrl_abs, ctrl_weights)
-            endpoint_abs = torch.abs(matched_pred_curves[:, [0, -1]] - matched_tgt_curves[:, [0, -1]]).mean(dim=(1, 2))
+            endpoint_abs = aligned_endpoint_l1(matched_pred_curves, matched_tgt_curves)
             loss_endpoint = weighted_mean(endpoint_abs, endpoint_weights)
             matched_pred_boxes = curve_boxes_xyxy(matched_pred_curves)
-            matched_tgt_boxes = curve_boxes_xyxy(matched_tgt_curves)
+            matched_tgt_boxes = curve_boxes_xyxy(oriented_tgt_curves)
             loss_giou = weighted_mean(1.0 - matched_generalized_box_iou(matched_pred_boxes, matched_tgt_boxes), ctrl_weights)
             curve_dist, curve_chamfer, curve_length = symmetric_curve_distance(
                 matched_pred_curves,
-                matched_tgt_curves,
+                oriented_tgt_curves,
                 num_samples=int(loss_cfg.get('num_curve_samples', 16)),
                 length_weight=float(loss_cfg.get('curve_distance_length_weight', 0.25)),
             )
