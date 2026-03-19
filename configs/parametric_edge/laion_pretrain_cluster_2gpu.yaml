@@ -60,7 +60,7 @@ model:
   input_channels: 3
   target_degree: 5
   hidden_dim: 320
-  num_queries: 512
+  num_queries: 256
   nheads: 10
   num_encoder_layers: 4
   num_decoder_layers: 6
@@ -74,6 +74,8 @@ model:
   backbone_out_indices: [2, 5, 8, 11]
   backbone_input_norm: imagenet
   query_source: two_stage
+  group_proposal_pool_factor: 1.0
+  group_proposal_split_strategy: random_aux_chunk
   curve_parameterization: endpoint_offsets
   curve_delta_scale: 0.35
   interior_delta_ratio: 0.35
@@ -88,7 +90,6 @@ loss:
   focal_gamma: 2.0
   control_cost: 1.5
   sample_cost: 2.0
-  box_cost: 0.5
   giou_cost: 1.0
   curve_distance_cost: 6.0
   curve_match_point_count: 4
@@ -97,22 +98,21 @@ loss:
   ctrl_weight: 9.0
   sample_weight: 6.0
   endpoint_weight: 9.0
-  bbox_weight: 0.0
   giou_weight: 0.15
   curve_distance_weight: 7.5
   curve_distance_length_weight: 0.25
   no_object_weight: 1.0
   dynamic_class_balance: true
   aux_weight: 0.2
+  aux_layer_stride: 2
   dn_weight: 3.0
   dn_curve_weight: 5.0
   group_detr_num_groups: 4
   one_to_many_weight: 1.0
-  one_to_many_ce_weight: 5.5
+  one_to_many_ce_weight: 1.5
   one_to_many_ctrl_weight: 9.0
   one_to_many_sample_weight: 6.0
   one_to_many_endpoint_weight: 9.0
-  one_to_many_bbox_weight: 0.0
   one_to_many_giou_weight: 0.15
   one_to_many_curve_distance_weight: 7.5
   topk_positive_enabled: true
@@ -140,7 +140,7 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-2gpu-q512-eb256-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-2gpu-q256-eb256-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: 2
@@ -171,15 +171,15 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-pretrain-2gpu-q512-eb256-lr5e5-fp32
+    name: laion-pretrain-2gpu-q256-eb256-lr5e5-fp32
     group: laion-cluster-pretrain
     job_type: train
     tags:
       - laion
       - cluster
       - 2gpu
-      - q512
+      - q256
       - effective-batch-256
       - lr5e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-2gpu-q512-eb256-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-pretrain-2gpu-q256-eb256-lr5e5-fp32/wandb

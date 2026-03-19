@@ -14,7 +14,6 @@ def _build_cost_matrix(
     tgt_boxes: torch.Tensor,
     control_cost: float,
     sample_cost: float,
-    box_cost: float,
     giou_cost: float,
     curve_distance_cost: float,
     curve_match_point_count: int,
@@ -26,13 +25,11 @@ def _build_cost_matrix(
     sampled_tgt = sample_bezier_curves_torch(tgt_curves, num_samples=num_curve_samples)
     sample_cost_matrix = torch.cdist(sampled_pred.reshape(num_queries, -1), sampled_tgt.reshape(tgt_curves.shape[0], -1), p=1)
     pred_boxes = curve_boxes_xyxy(curves)
-    bbox_cost = torch.cdist(pred_boxes, tgt_boxes, p=1)
     giou_cost_matrix = 1.0 - pairwise_generalized_box_iou(pred_boxes, tgt_boxes)
     curve_distance_cost_matrix = pairwise_curve_chamfer_cost(curves, tgt_curves, point_count=curve_match_point_count)
     total = (
         control_cost * ctrl_cost
         + sample_cost * sample_cost_matrix
-        + box_cost * bbox_cost
         + giou_cost * giou_cost_matrix
         + curve_distance_cost * curve_distance_cost_matrix
     )
@@ -46,7 +43,6 @@ def build_curve_cost_matrix(
     tgt_boxes: torch.Tensor,
     control_cost: float,
     sample_cost: float,
-    box_cost: float,
     giou_cost: float,
     curve_distance_cost: float,
     curve_match_point_count: int,
@@ -59,7 +55,6 @@ def build_curve_cost_matrix(
         tgt_boxes=tgt_boxes,
         control_cost=control_cost,
         sample_cost=sample_cost,
-        box_cost=box_cost,
         giou_cost=giou_cost,
         curve_distance_cost=curve_distance_cost,
         curve_match_point_count=curve_match_point_count,
@@ -74,7 +69,6 @@ def hungarian_curve_matching(
     targets: List[dict],
     control_cost: float = 5.0,
     sample_cost: float = 2.0,
-    box_cost: float = 1.0,
     giou_cost: float = 1.0,
     curve_distance_cost: float = 0.0,
     curve_match_point_count: int = 4,
@@ -94,7 +88,6 @@ def hungarian_curve_matching(
             tgt_boxes=tgt_boxes,
             control_cost=control_cost,
             sample_cost=sample_cost,
-            box_cost=box_cost,
             giou_cost=giou_cost,
             curve_distance_cost=curve_distance_cost,
             curve_match_point_count=curve_match_point_count,

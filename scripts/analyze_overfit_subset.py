@@ -61,7 +61,6 @@ def main():
                 targets,
                 control_cost=float(cfg['loss'].get('control_cost', 5.0)),
                 sample_cost=float(cfg['loss'].get('sample_cost', 2.0)),
-                box_cost=float(cfg['loss'].get('box_cost', 1.0)),
                 giou_cost=float(cfg['loss'].get('giou_cost', 1.0)),
                 curve_distance_cost=float(cfg['loss'].get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(cfg['loss'].get('curve_match_point_count', 4)),
@@ -80,9 +79,8 @@ def main():
                 'loss_ctrl': float(losses['loss_ctrl'].detach()),
                 'loss_curve_dist': float(losses['loss_curve_dist'].detach()),
                 'loss_endpoint': float(losses['loss_endpoint'].detach()),
-                'loss_bbox': float(losses['loss_bbox'].detach()),
                 'loss_giou': float(losses['loss_giou'].detach()),
-                'loss_topk_pos': float(losses.get('loss_topk_pos', torch.tensor(0.0)).detach()),
+                'loss_om_topk': float(losses.get('loss_om_topk', torch.tensor(0.0)).detach()),
             })
 
     rows = sorted(rows, key=lambda x: x['num_targets'])

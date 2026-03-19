@@ -168,14 +168,13 @@ def compute_cost_breakdown(config: Dict, target_curve: torch.Tensor, query_curve
         target_curve.reshape(target_curve.shape[0], -1),
         p=1,
     )[:, 0]
-    bbox_term = float(loss_cfg.get('box_cost', 1.0)) * torch.cdist(query_boxes, target_boxes, p=1)[:, 0]
     giou_term = float(loss_cfg.get('giou_cost', 1.0)) * (1.0 - pairwise_generalized_box_iou(query_boxes, target_boxes)[:, 0])
     curve_term = float(loss_cfg.get('curve_distance_cost', 1.0)) * pairwise_curve_chamfer_cost(
         query_curves,
         target_curve,
         point_count=int(loss_cfg.get('curve_match_point_count', 4)),
     )[:, 0]
-    total_term = control_term + bbox_term + giou_term + curve_term
+    total_term = control_term + giou_term + curve_term
     reference_total, reference_chamfer, reference_length = symmetric_curve_distance(
         query_curves,
         target_curve.repeat(query_curves.shape[0], 1, 1),
@@ -184,7 +183,6 @@ def compute_cost_breakdown(config: Dict, target_curve: torch.Tensor, query_curve
     )
     return {
         'control_term': control_term,
-        'bbox_term': bbox_term,
         'giou_term': giou_term,
         'curve_term': curve_term,
         'total_term': total_term,
@@ -204,7 +202,7 @@ def format_annotation(record: Dict) -> str:
         f"q{record['query_index']:02d} r{record['rank_total']:02d}\n"
         f"tot={record['total_term']:.2f}\n"
         f"ctl={record['control_term']:.2f}\n"
-        f"box={record['bbox_term']:.2f} giou={record['giou_term']:.2f}\n"
+        f"giou={record['giou_term']:.2f}\n"
         f"curve={record['curve_term']:.2f} ref={record['reference_total']:.2f}"
     )
 
@@ -279,7 +277,6 @@ def visualize_scenario(
         )
     weight_text = '  '.join([
         f"ctrl={weights['control_cost']:.1f}",
-        f"box={weights['box_cost']:.1f}",
         f"giou={weights['giou_cost']:.1f}",
         f"curve={weights['curve_distance_cost']:.1f}",
     ])
@@ -299,7 +296,6 @@ def write_summary(output_dir: Path, scenario_name: str, records: List[Dict], cor
         'Spearman correlation against dense curve reference distance:',
         f"- total_term: {correlations['total_term']:.4f}",
         f"- control_term: {correlations['control_term']:.4f}",
-        f"- bbox_term: {correlations['bbox_term']:.4f}",
         f"- giou_term: {correlations['giou_term']:.4f}",
         f"- curve_term: {correlations['curve_term']:.4f}",
         '',
@@ -314,7 +310,7 @@ def write_summary(output_dir: Path, scenario_name: str, records: List[Dict], cor
     summary_lines.append('Lowest total cost queries:')
     for record in records[:8]:
         summary_lines.append(
-            f"- q{record['query_index']:02d}: total={record['total_term']:.3f}, ctrl={record['control_term']:.3f}, box={record['bbox_term']:.3f}, giou={record['giou_term']:.3f}, curve={record['curve_term']:.3f}, ref={record['reference_total']:.3f}"
+            f"- q{record['query_index']:02d}: total={record['total_term']:.3f}, ctrl={record['control_term']:.3f}, giou={record['giou_term']:.3f}, curve={record['curve_term']:.3f}, ref={record['reference_total']:.3f}"
         )
     (output_dir / f'{scenario_name}_matching_summary.md').write_text('\n'.join(summary_lines) + '\n', encoding='utf-8')
 
@@ -326,7 +322,7 @@ def save_records(output_dir: Path, scenario_name: str, records: List[Dict], corr
     )
     header = [
         'query_index', 'rank_total', 'rank_reference', 'rank_gap',
-        'total_term', 'control_term', 'bbox_term', 'giou_term', 'curve_term',
+        'total_term', 'control_term', 'giou_term', 'curve_term',
         'reference_total', 'reference_chamfer', 'reference_length',
     ]
     csv_lines = [','.join(header)]
@@ -349,13 +345,12 @@ def run_scenario(config: Dict, output_dir: Path, scenario_name: str, output_name
     reference_values = np.array([record['reference_total'] for record in records], dtype=np.float64)
     correlations = {
         key: spearman_corr(np.array([record[key] for record in records], dtype=np.float64), reference_values)
-        for key in ['total_term', 'control_term', 'bbox_term', 'giou_term', 'curve_term']
+        for key in ['total_term', 'control_term', 'giou_term', 'curve_term']
     }
     save_records(output_dir=output_dir, scenario_name=output_name, records=records, correlations=correlations)
     write_summary(output_dir=output_dir, scenario_name=output_name, records=records, correlations=correlations)
     weights = {
         'control_cost': float(config['loss'].get('control_cost', 5.0)),
-        'box_cost': float(config['loss'].get('box_cost', 1.0)),
         'giou_cost': float(config['loss'].get('giou_cost', 1.0)),
         'curve_distance_cost': float(config['loss'].get('curve_distance_cost', 1.0)),
     }
@@ -380,7 +375,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--num-queries', type=int, default=24, help='Number of synthetic query curves.')
     parser.add_argument('--seed', type=int, default=13, help='Random seed for synthetic data generation.')
     parser.add_argument('--control-cost', type=float, default=None, help='Override control-point matching cost.')
-    parser.add_argument('--box-cost', type=float, default=None, help='Override bbox matching cost.')
     parser.add_argument('--giou-cost', type=float, default=None, help='Override gIoU matching cost.')
     parser.add_argument('--curve-distance-cost', type=float, default=None, help='Override lightweight curve-distance matching cost.')
     parser.add_argument('--name-suffix', type=str, default='', help='Optional suffix appended to scenario output names.')
@@ -400,8 +394,6 @@ def main() -> None:
     config = copy.deepcopy(config)
     if args.control_cost is not None:
         config['loss']['control_cost'] = float(args.control_cost)
-    if args.box_cost is not None:
-        config['loss']['box_cost'] = float(args.box_cost)
     if args.giou_cost is not None:
         config['loss']['giou_cost'] = float(args.giou_cost)
     if args.curve_distance_cost is not None:

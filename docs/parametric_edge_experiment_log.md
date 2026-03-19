@@ -46,15 +46,16 @@ Dataset-side cache artifacts are stored separately under:
 
 These cache files are not source-controlled and should not be expected in Git history.
 
-## Formal BSDS Training
+## Current Default Training
 
 Purpose:
 
-- Use the committed default config as the formal BSDS training recipe.
+- Use the committed default config as the LAION pretraining recipe.
 
 Config:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
+- [configs/parametric_edge/bsds_formal.yaml](../configs/parametric_edge/bsds_formal.yaml)
 
 Current intended command:
 
@@ -64,20 +65,20 @@ python train.py --config configs/parametric_edge/default.yaml
 
 Current runtime design:
 
-- Train on BSDS `train + val`
-- Validate and test on BSDS `test`
-- Use 2 GPUs with DDP
+- Train on LAION synthetic data with precomputed Bezier graph caches
+- Validate and test on held-out LAION selections defined by `selection_offset`
+- Use 4 GPUs with DDP in the main cluster recipe
 - Keep both `best` and `last` checkpoints
 - Use `ddp_find_unused_parameters_true` because grouped-query training can leave some groups inactive on a step
-- Use `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2`, giving effective global batch 40
-- Use `channels_last: true` because it removed the observed DDP grad-stride warning and slightly improved throughput in short tests
-- Record train visualizations every 500 iterations and validation visualizations periodically
+- Use FP32 in the current cluster recipe
+- Record train and validation visualizations periodically
 
 Current status:
 
-- The formal BSDS recipe is checked in as the default config.
+- The LAION cluster pretraining recipe is now the default config.
 - The grouped auxiliary losses are forced to remain active by using the maximum valid group count instead of random `1..K` sampling.
-- Earlier parameter-search leftovers were removed after the default recipe was selected.
+- Historical BSDS training remains available as a separate path, but is no longer the default entrypoint.
+- Use `configs/parametric_edge/bsds_formal.yaml` when you explicitly want the BSDS recipe.
 
 ## LAION Cluster Pretraining
 
@@ -109,7 +110,7 @@ Example direct cluster submission:
 ```bash
 sbatch <<'EOF'
 #!/usr/bin/env bash
-#SBATCH -J laion-pretrain-q512-eb256-lr5e5-fp32
+#SBATCH -J laion-pretrain-q256-eb256-lr5e5-fp32
 #SBATCH -p gbunchQ
 #SBATCH --gres=gpu:4
 #SBATCH -c 32

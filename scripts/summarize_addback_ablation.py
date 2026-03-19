@@ -18,10 +18,8 @@ MAIN_LOSS_COMPONENTS = [
     ('val/loss_ce', 'ce_weight', 1.0),
     ('val/loss_ctrl', 'ctrl_weight', 5.0),
     ('val/loss_endpoint', 'endpoint_weight', 2.0),
-    ('val/loss_bbox', 'bbox_weight', 2.0),
     ('val/loss_giou', 'giou_weight', 1.0),
     ('val/loss_curve_dist', 'curve_distance_weight', 2.0),
-    ('val/loss_extent', 'extent_weight', 0.0),
 ]
 
 

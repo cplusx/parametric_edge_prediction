@@ -2,7 +2,6 @@ from typing import Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
-from scipy.optimize import linear_sum_assignment
 
 from models.losses.base import BaseLossComponent, balanced_class_weights
 from models.matcher import build_curve_cost_matrix, hungarian_curve_matching
@@ -20,175 +19,6 @@ class PositiveObjectLoss(BaseLossComponent):
         logits = torch.cat(positives, dim=0)
         labels = torch.zeros((logits.shape[0],), dtype=torch.long, device=logits.device)
         return F.cross_entropy(logits, labels)
-
-
-class TopKPositiveLoss(BaseLossComponent):
-    def __init__(self, config: Dict, matched_curve_loss) -> None:
-        super().__init__(config)
-        self.matched_curve_loss = matched_curve_loss
-
-    def _topk_truncation_enabled(self) -> bool:
-        return bool(self.config['loss'].get('topk_positive_enabled', False))
-
-    def _layer_topk_per_target(self, layer_idx: int) -> int:
-        layer_values = self.config['loss'].get('topk_positive_layer_k')
-        if isinstance(layer_values, list) and layer_values:
-            index = min(layer_idx, len(layer_values) - 1)
-            return int(layer_values[index])
-        return int(self.config['loss'].get('topk_positive_per_gt', 0))
-
-    def _layer_rank_weights(self, layer_idx: int, max_rank: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        del layer_idx
-        tau = float(self.config['loss'].get('topk_positive_tau', 1.5))
-        tau = max(tau, 1e-6)
-        return torch.exp(-torch.arange(max_rank, device=device, dtype=dtype) / tau)
-
-    def _flatten_group_outputs(self, aux_outputs: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        grouped_logits = aux_outputs['group_pred_logits']
-        grouped_curves = aux_outputs['group_pred_curves']
-        batch_size, num_groups, num_queries = grouped_logits.shape[:3]
-        flat_logits = grouped_logits.reshape(batch_size, num_groups * num_queries, -1)
-        flat_curves = grouped_curves.reshape(batch_size, num_groups * num_queries, grouped_curves.shape[-2], grouped_curves.shape[-1])
-        return flat_logits, flat_curves, {}
-
-    def _select_group_topk_matches(
-        self,
-        aux_outputs: Dict[str, torch.Tensor],
-        targets: List[dict],
-        topk_per_target: int,
-        layer_idx: int,
-    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], List[torch.Tensor], torch.Tensor]:
-        loss_cfg = self.config['loss']
-        grouped_logits = aux_outputs['group_pred_logits']
-        grouped_curves = aux_outputs['group_pred_curves']
-        batch_size, num_groups, num_queries = grouped_logits.shape[:3]
-        device = grouped_logits.device
-        dtype = grouped_logits.dtype
-        topk_enabled = self._topk_truncation_enabled()
-        selected_indices: List[Tuple[torch.Tensor, torch.Tensor]] = []
-        selected_weights: List[torch.Tensor] = []
-        query_weights = torch.ones((batch_size, num_groups * num_queries), device=device, dtype=dtype)
-
-        for batch_idx, target in enumerate(targets):
-            tgt_curves = target['curves'].to(device)
-            tgt_boxes = target['boxes'].to(device)
-            if tgt_curves.numel() == 0:
-                selected_indices.append((torch.empty(0, dtype=torch.long, device=device), torch.empty(0, dtype=torch.long, device=device)))
-                selected_weights.append(torch.empty(0, dtype=dtype, device=device))
-                continue
-
-            candidates: List[List[Tuple[float, int]]] = [[] for _ in range(tgt_curves.shape[0])]
-            with torch.no_grad():
-                for group_idx in range(num_groups):
-                    total_cost = build_curve_cost_matrix(
-                        logits=grouped_logits[batch_idx, group_idx],
-                        curves=grouped_curves[batch_idx, group_idx],
-                        tgt_curves=tgt_curves,
-                        tgt_boxes=tgt_boxes,
-                        control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                        sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                        box_cost=float(loss_cfg.get('box_cost', 1.0)),
-                        giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
-                        curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
-                        curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-                        num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                    )
-                    row_ind, col_ind = linear_sum_assignment(total_cost.cpu().numpy())
-                    for src_idx, tgt_idx in zip(row_ind.tolist(), col_ind.tolist()):
-                        candidates[tgt_idx].append((float(total_cost[src_idx, tgt_idx].item()), group_idx * num_queries + src_idx))
-
-            batch_src = []
-            batch_tgt = []
-            batch_pair_weights = []
-            for tgt_idx, tgt_candidates in enumerate(candidates):
-                if not tgt_candidates:
-                    continue
-                tgt_candidates.sort(key=lambda item: item[0])
-                keep_count = len(tgt_candidates)
-                if topk_enabled:
-                    keep_count = min(keep_count, max(0, topk_per_target))
-                if keep_count <= 0:
-                    continue
-                rank_weights = self._layer_rank_weights(layer_idx, keep_count, device=device, dtype=dtype)
-                for rank_idx, (_, flat_src_idx) in enumerate(tgt_candidates[:keep_count]):
-                    batch_src.append(flat_src_idx)
-                    batch_tgt.append(tgt_idx)
-                    batch_pair_weights.append(rank_weights[rank_idx])
-                    query_weights[batch_idx, flat_src_idx] = rank_weights[rank_idx]
-
-            if batch_src:
-                selected_indices.append((
-                    torch.tensor(batch_src, dtype=torch.long, device=device),
-                    torch.tensor(batch_tgt, dtype=torch.long, device=device),
-                ))
-                selected_weights.append(torch.stack(batch_pair_weights).to(device=device, dtype=dtype))
-            else:
-                selected_indices.append((torch.empty(0, dtype=torch.long, device=device), torch.empty(0, dtype=torch.long, device=device)))
-                selected_weights.append(torch.empty(0, dtype=dtype, device=device))
-        return selected_indices, selected_weights, query_weights
-
-    def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[dict]) -> torch.Tensor:
-        loss_cfg = self.config['loss']
-        aux_outputs = outputs.get('aux_outputs', [])
-        if not aux_outputs:
-            zero = outputs['pred_logits'].sum() * 0.0
-            return {
-                'loss_topk_pos': zero,
-                'loss_topk_pos_ce': zero,
-                'loss_topk_pos_ctrl': zero,
-                'loss_topk_pos_sample': zero,
-                'loss_topk_pos_endpoint': zero,
-                'loss_topk_pos_bbox': zero,
-                'loss_topk_pos_giou': zero,
-                'loss_topk_pos_curve_dist': zero,
-            }
-
-        layer_summaries = []
-        for layer_idx, aux in enumerate(aux_outputs):
-            grouped_logits = aux.get('group_pred_logits')
-            grouped_curves = aux.get('group_pred_curves')
-            if grouped_logits is None or grouped_curves is None:
-                continue
-            topk_per_target = self._layer_topk_per_target(layer_idx)
-            if self._topk_truncation_enabled() and topk_per_target <= 0:
-                continue
-            indices, match_weights, query_weights = self._select_group_topk_matches(aux, targets, topk_per_target, layer_idx)
-            flat_logits, flat_curves, runtime_outputs = self._flatten_group_outputs(aux)
-            layer_summaries.append(
-                self.matched_curve_loss(
-                    flat_curves,
-                    flat_logits,
-                    targets,
-                    indices,
-                    runtime_outputs,
-                    match_weights=match_weights,
-                    query_weights=query_weights,
-                )
-            )
-
-        if not layer_summaries:
-            zero = outputs['pred_logits'].sum() * 0.0
-            return {
-                'loss_topk_pos': zero,
-                'loss_topk_pos_ce': zero,
-                'loss_topk_pos_ctrl': zero,
-                'loss_topk_pos_sample': zero,
-                'loss_topk_pos_endpoint': zero,
-                'loss_topk_pos_bbox': zero,
-                'loss_topk_pos_giou': zero,
-                'loss_topk_pos_curve_dist': zero,
-            }
-
-        return {
-            'loss_topk_pos': torch.stack([summary['loss_total'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_ce': torch.stack([summary['loss_ce'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_ctrl': torch.stack([summary['loss_ctrl'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_sample': torch.stack([summary['loss_sample'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_endpoint': torch.stack([summary['loss_endpoint'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_bbox': torch.stack([summary['loss_bbox'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_giou': torch.stack([summary['loss_giou'] for summary in layer_summaries]).mean(),
-            'loss_topk_pos_curve_dist': torch.stack([summary['loss_curve_dist'] for summary in layer_summaries]).mean(),
-        }
 
 
 class DenoisingLoss(BaseLossComponent):
@@ -269,7 +99,6 @@ class DistinctQueryLoss(BaseLossComponent):
                         tgt_boxes=tgt_boxes,
                         control_cost=float(loss_cfg.get('control_cost', 5.0)),
                         sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                        box_cost=float(loss_cfg.get('box_cost', 1.0)),
                         giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                         curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                         curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
@@ -298,6 +127,91 @@ class OneToManyLoss(BaseLossComponent):
         self.matched_curve_loss = matched_curve_loss
         self.positive_object_loss = positive_object_loss
 
+    def _topk_enabled(self) -> bool:
+        return bool(self.config['loss'].get('topk_positive_enabled', False))
+
+    def _topk_per_target(self) -> int:
+        layer_values = self.config['loss'].get('topk_positive_layer_k')
+        if isinstance(layer_values, list) and layer_values:
+            return int(layer_values[-1])
+        return int(self.config['loss'].get('topk_positive_per_gt', 0))
+
+    def _rank_weights(self, keep_count: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        tau = float(self.config['loss'].get('topk_positive_tau', 1.5))
+        tau = max(tau, 1e-6)
+        return torch.exp(-torch.arange(keep_count, device=device, dtype=dtype) / tau)
+
+    def _select_group_topk_matches(
+        self,
+        group_logits: torch.Tensor,
+        group_curves: torch.Tensor,
+        targets: List[dict],
+        topk_per_target: int,
+    ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], List[torch.Tensor], torch.Tensor]:
+        loss_cfg = self.config['loss']
+        batch_size, num_queries = group_logits.shape[:2]
+        device = group_logits.device
+        dtype = group_logits.dtype
+        selected_indices: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        selected_weights: List[torch.Tensor] = []
+        query_weights = torch.ones((batch_size, num_queries), device=device, dtype=dtype)
+
+        for batch_idx, target in enumerate(targets):
+            tgt_curves = target['curves'].to(device)
+            tgt_boxes = target['boxes'].to(device)
+            if tgt_curves.numel() == 0:
+                selected_indices.append((torch.empty(0, dtype=torch.long, device=device), torch.empty(0, dtype=torch.long, device=device)))
+                selected_weights.append(torch.empty(0, dtype=dtype, device=device))
+                continue
+
+            with torch.no_grad():
+                total_cost = build_curve_cost_matrix(
+                    logits=group_logits[batch_idx],
+                    curves=group_curves[batch_idx],
+                    tgt_curves=tgt_curves,
+                    tgt_boxes=tgt_boxes,
+                    control_cost=float(loss_cfg.get('control_cost', 5.0)),
+                    sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
+                    giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
+                    curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                    curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
+                    num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                )
+
+            selected_by_src: Dict[int, Tuple[float, int, torch.Tensor]] = {}
+            for tgt_idx in range(tgt_curves.shape[0]):
+                target_costs = total_cost[:, tgt_idx]
+                keep_count = min(num_queries, max(0, topk_per_target))
+                if keep_count <= 0:
+                    continue
+                candidate_src = torch.topk(target_costs, k=keep_count, largest=False).indices
+                rank_weights = self._rank_weights(candidate_src.numel(), device=device, dtype=dtype)
+                for rank_idx, src_idx in enumerate(candidate_src.tolist()):
+                    cost_value = float(target_costs[src_idx].item())
+                    existing = selected_by_src.get(src_idx)
+                    if existing is None or cost_value < existing[0]:
+                        selected_by_src[src_idx] = (cost_value, tgt_idx, rank_weights[rank_idx])
+
+            batch_src = []
+            batch_tgt = []
+            batch_pair_weights = []
+            for src_idx, (_, tgt_idx, pair_weight) in sorted(selected_by_src.items(), key=lambda item: item[0]):
+                batch_src.append(src_idx)
+                batch_tgt.append(tgt_idx)
+                batch_pair_weights.append(pair_weight)
+                query_weights[batch_idx, src_idx] = pair_weight
+
+            if batch_src:
+                selected_indices.append((
+                    torch.tensor(batch_src, dtype=torch.long, device=device),
+                    torch.tensor(batch_tgt, dtype=torch.long, device=device),
+                ))
+                selected_weights.append(torch.stack(batch_pair_weights).to(device=device, dtype=dtype))
+            else:
+                selected_indices.append((torch.empty(0, dtype=torch.long, device=device), torch.empty(0, dtype=torch.long, device=device)))
+                selected_weights.append(torch.empty(0, dtype=dtype, device=device))
+        return selected_indices, selected_weights, query_weights
+
     def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[dict]) -> Dict[str, torch.Tensor]:
         grouped_logits = outputs.get('group_pred_logits')
         grouped_curves = outputs.get('group_pred_curves')
@@ -309,9 +223,9 @@ class OneToManyLoss(BaseLossComponent):
                 'loss_om_ctrl': zero,
                 'loss_om_sample': zero,
                 'loss_om_endpoint': zero,
-                'loss_om_bbox': zero,
                 'loss_om_giou': zero,
                 'loss_om_curve_dist': zero,
+                'loss_om_topk': zero,
             }
         loss_cfg = self.config['loss']
         om_weight_overrides = {
@@ -319,11 +233,13 @@ class OneToManyLoss(BaseLossComponent):
             'ctrl_weight': float(loss_cfg.get('one_to_many_ctrl_weight', loss_cfg.get('ctrl_weight', 5.0))),
             'sample_weight': float(loss_cfg.get('one_to_many_sample_weight', loss_cfg.get('sample_weight', 0.0))),
             'endpoint_weight': float(loss_cfg.get('one_to_many_endpoint_weight', loss_cfg.get('endpoint_weight', 2.0))),
-            'bbox_weight': float(loss_cfg.get('one_to_many_bbox_weight', loss_cfg.get('bbox_weight', 2.0))),
             'giou_weight': float(loss_cfg.get('one_to_many_giou_weight', loss_cfg.get('giou_weight', 1.0))),
             'curve_distance_weight': float(loss_cfg.get('one_to_many_curve_distance_weight', loss_cfg.get('curve_distance_weight', 2.0))),
         }
         group_summaries = []
+        topk_summaries = []
+        topk_per_target = self._topk_per_target() if self._topk_enabled() else 0
+        topk_weight = float(loss_cfg.get('topk_positive_weight', 0.0))
         for group_idx in range(1, grouped_logits.shape[1]):
             group_indices = hungarian_curve_matching(
                 logits=grouped_logits[:, group_idx],
@@ -331,7 +247,6 @@ class OneToManyLoss(BaseLossComponent):
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
                 sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                box_cost=float(loss_cfg.get('box_cost', 1.0)),
                 giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
@@ -347,15 +262,38 @@ class OneToManyLoss(BaseLossComponent):
                     loss_weight_overrides=om_weight_overrides,
                 )
             )
+            if topk_weight > 0.0 and topk_per_target > 0:
+                topk_indices, match_weights, query_weights = self._select_group_topk_matches(
+                    grouped_logits[:, group_idx],
+                    grouped_curves[:, group_idx],
+                    targets,
+                    topk_per_target,
+                )
+                topk_summaries.append(
+                    self.matched_curve_loss(
+                        grouped_curves[:, group_idx],
+                        grouped_logits[:, group_idx],
+                        targets,
+                        topk_indices,
+                        {},
+                        match_weights=match_weights,
+                        query_weights=query_weights,
+                        loss_weight_overrides=om_weight_overrides,
+                    )
+                )
 
         total = torch.stack([summary['loss_total'] for summary in group_summaries]).mean()
+        topk_total = total * 0.0
+        if topk_summaries:
+            topk_total = torch.stack([summary['loss_total'] for summary in topk_summaries]).mean()
+            total = total + topk_weight * topk_total
         return {
             'loss_om_total': total,
             'loss_om_ce': torch.stack([summary['loss_ce'] for summary in group_summaries]).mean(),
             'loss_om_ctrl': torch.stack([summary['loss_ctrl'] for summary in group_summaries]).mean(),
             'loss_om_sample': torch.stack([summary['loss_sample'] for summary in group_summaries]).mean(),
             'loss_om_endpoint': torch.stack([summary['loss_endpoint'] for summary in group_summaries]).mean(),
-            'loss_om_bbox': torch.stack([summary['loss_bbox'] for summary in group_summaries]).mean(),
             'loss_om_giou': torch.stack([summary['loss_giou'] for summary in group_summaries]).mean(),
             'loss_om_curve_dist': torch.stack([summary['loss_curve_dist'] for summary in group_summaries]).mean(),
+            'loss_om_topk': topk_total,
         }

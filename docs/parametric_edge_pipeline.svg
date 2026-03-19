@@ -83,7 +83,7 @@
   <text x="512" y="586" class="body">Query content embedding table</text>
   <text x="512" y="612" class="body">Fuse proposal memory with learned content</text>
   <text x="512" y="638" class="body">Grouped training: up to 4 groups</text>
-  <text x="512" y="664" class="mono">512 queries per group</text>
+  <text x="512" y="664" class="mono">256 queries per group</text>
 
   <rect class="box gray" x="838" y="518" width="286" height="164"/>
   <text x="864" y="556" class="label">DN branch, training only</text>

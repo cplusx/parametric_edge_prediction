@@ -184,6 +184,8 @@ class ParametricDETR(nn.Module):
         self.curve_parameterization = str(model_cfg.get('curve_parameterization', 'endpoint_offsets'))
         self.curve_delta_scale = float(model_cfg.get('curve_delta_scale', 0.35))
         self.interior_delta_ratio = float(model_cfg.get('interior_delta_ratio', 0.35))
+        self.group_proposal_pool_factor = float(model_cfg.get('group_proposal_pool_factor', 1.0))
+        self.group_proposal_split_strategy = str(model_cfg.get('group_proposal_split_strategy', 'random_aux_chunk'))
         self.group_addback_enabled = (
             float(config['loss'].get('one_to_many_weight', 0.0)) > 0.0
             or float(config['loss'].get('topk_positive_weight', 0.0)) > 0.0
@@ -196,6 +198,8 @@ class ParametricDETR(nn.Module):
             raise ValueError(f'Unsupported query_source: {self.query_source}')
         if self.curve_parameterization not in {'endpoint_offsets', 'full_offsets', 'anchor_delta'}:
             raise ValueError(f'Unsupported curve_parameterization: {self.curve_parameterization}')
+        if self.group_proposal_split_strategy not in {'score_chunk', 'random_aux_chunk'}:
+            raise ValueError(f'Unsupported group_proposal_split_strategy: {self.group_proposal_split_strategy}')
 
         self.backbone = DINOv2PyramidBackbone(config)
         self.encoder = nn.TransformerEncoder(
@@ -331,25 +335,64 @@ class ParametricDETR(nn.Module):
         proposal_ref = torch.sigmoid(inverse_sigmoid(memory_coords.unsqueeze(0).expand(batch_size, -1, -1)) + self.proposal_ref_head(memory))
         proposal_curve_base = proposal_ref.unsqueeze(2).expand(-1, -1, self.num_control_points, -1).reshape(batch_size, -1, self.curve_dim)
         proposal_curve = torch.sigmoid(inverse_sigmoid(proposal_curve_base) + self.proposal_curve_head(memory))
-        topk = min(self.num_queries, proposal_logits.shape[1])
-        topk_idx = proposal_logits.topk(topk, dim=1).indices
-        gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
-        query_memory = torch.gather(memory, 1, gather_idx)
-        proposal_query_anchor = torch.gather(proposal_curve, 1, topk_idx.unsqueeze(-1).expand(-1, -1, self.curve_dim))
-        proposal_query_anchor = proposal_query_anchor.reshape(batch_size, topk, self.num_control_points, 2)
-
         group_count = self._active_group_count(targets)
+        pool_target = max(self.num_queries, int(round(self.group_proposal_pool_factor * group_count * self.num_queries)))
+        pool_k = min(pool_target, proposal_logits.shape[1])
+        topk_idx = proposal_logits.topk(pool_k, dim=1).indices
+        gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
+        proposal_memory_pool = torch.gather(memory, 1, gather_idx)
+        proposal_anchor_pool = torch.gather(proposal_curve, 1, topk_idx.unsqueeze(-1).expand(-1, -1, self.curve_dim))
+        proposal_anchor_pool = proposal_anchor_pool.reshape(batch_size, pool_k, self.num_control_points, 2)
+
+        if self.group_proposal_split_strategy == 'random_aux_chunk' and group_count > 1 and pool_k > self.num_queries:
+            remain_start = min(self.num_queries, pool_k)
+            remain_len = max(0, pool_k - remain_start)
+            if remain_len > 0:
+                randomized_memory_tail = []
+                randomized_anchor_tail = []
+                for batch_idx in range(batch_size):
+                    perm = torch.randperm(remain_len, device=memory.device)
+                    randomized_memory_tail.append(proposal_memory_pool[batch_idx, remain_start:][perm])
+                    randomized_anchor_tail.append(proposal_anchor_pool[batch_idx, remain_start:][perm])
+                proposal_memory_pool = torch.cat(
+                    [proposal_memory_pool[:, :remain_start], torch.stack(randomized_memory_tail, dim=0)],
+                    dim=1,
+                )
+                proposal_anchor_pool = torch.cat(
+                    [proposal_anchor_pool[:, :remain_start], torch.stack(randomized_anchor_tail, dim=0)],
+                    dim=1,
+                )
+
         group_contents = []
         group_anchors = []
         for group_idx in range(group_count):
             start = group_idx * self.num_queries
-            learned = self.query_content_embed.weight[start:start + topk].unsqueeze(0).expand(batch_size, -1, -1)
-            query_content = self.query_fuse(torch.cat([self.proposal_memory_proj(query_memory), learned], dim=-1))
-            query_anchor = proposal_query_anchor
-            if topk < self.num_queries:
-                remain = self.num_queries - topk
-                extra_content = self.query_content_embed.weight[start + topk:start + self.num_queries].unsqueeze(0).expand(batch_size, -1, -1)
-                extra_anchor = self.learned_query_curve_anchors.weight[start + topk:start + self.num_queries].sigmoid().unsqueeze(0).expand(batch_size, -1, -1)
+            if self.group_proposal_split_strategy == 'score_chunk':
+                chunk_start = min(group_idx * self.num_queries, pool_k)
+                chunk_end = min(chunk_start + self.num_queries, pool_k)
+            elif self.group_proposal_split_strategy == 'random_aux_chunk':
+                if group_idx == 0:
+                    chunk_start = 0
+                    chunk_end = min(self.num_queries, pool_k)
+                else:
+                    chunk_start = min(self.num_queries + (group_idx - 1) * self.num_queries, pool_k)
+                    chunk_end = min(chunk_start + self.num_queries, pool_k)
+            else:
+                raise ValueError(f'Unsupported group_proposal_split_strategy: {self.group_proposal_split_strategy}')
+            chunk_len = max(0, chunk_end - chunk_start)
+
+            learned = self.query_content_embed.weight[start:start + chunk_len].unsqueeze(0).expand(batch_size, -1, -1)
+            if chunk_len > 0:
+                proposal_memory = proposal_memory_pool[:, chunk_start:chunk_end]
+                query_content = self.query_fuse(torch.cat([self.proposal_memory_proj(proposal_memory), learned], dim=-1))
+                query_anchor = proposal_anchor_pool[:, chunk_start:chunk_end]
+            else:
+                query_content = memory.new_zeros((batch_size, 0, self.hidden_dim))
+                query_anchor = proposal_anchor_pool[:, :0]
+            if chunk_len < self.num_queries:
+                remain = self.num_queries - chunk_len
+                extra_content = self.query_content_embed.weight[start + chunk_len:start + self.num_queries].unsqueeze(0).expand(batch_size, -1, -1)
+                extra_anchor = self.learned_query_curve_anchors.weight[start + chunk_len:start + self.num_queries].sigmoid().unsqueeze(0).expand(batch_size, -1, -1)
                 extra_anchor = extra_anchor.reshape(batch_size, remain, self.num_control_points, 2)
                 query_content = torch.cat([query_content, extra_content], dim=1)
                 query_anchor = torch.cat([query_anchor, extra_anchor], dim=1)
@@ -459,6 +502,20 @@ class ParametricDETR(nn.Module):
             scale[:, :, -1] = self.curve_delta_scale
         return (raw_points * scale).reshape(curve_raw.shape[0], curve_raw.shape[1], self.curve_dim)
 
+    def _selected_aux_layer_indices(self) -> List[int]:
+        loss_cfg = self.config['loss']
+        aux_weight = float(loss_cfg.get('aux_weight', 0.0))
+        if aux_weight <= 0.0:
+            return []
+        aux_layers = max(0, self.num_decoder_layers - 1)
+        if aux_layers == 0:
+            return []
+        stride = max(1, int(loss_cfg.get('aux_layer_stride', 1)))
+        indices = list(range(0, aux_layers, stride))
+        if not indices:
+            return []
+        return indices
+
     def forward(self, images: torch.Tensor, targets: Optional[List[dict]] = None) -> Dict[str, torch.Tensor]:
         feats = self.backbone(images)
         memory_tokens, feat_maps, memory_coords = self._flatten_multi_scale(feats)
@@ -494,10 +551,20 @@ class ParametricDETR(nn.Module):
 
         dn_count = dn_meta['count'] if dn_meta is not None else 0
         final = self._decode_to_output(decoder_states[-1], decoder_anchors[-1], decoder_refs[-1], dn_count=dn_count, query_group_count=query_group_count)
-        final['aux_outputs'] = [
-            self._decode_to_output(state, anchor, ref, dn_count=dn_count, query_group_count=query_group_count)
-            for state, anchor, ref in zip(decoder_states[:-1], decoder_anchors[:-1], decoder_refs[:-1])
-        ]
+        aux_indices = self._selected_aux_layer_indices()
+        if aux_indices:
+            final['aux_outputs'] = [
+                self._decode_to_output(
+                    decoder_states[layer_idx],
+                    decoder_anchors[layer_idx],
+                    decoder_refs[layer_idx],
+                    dn_count=dn_count,
+                    query_group_count=query_group_count,
+                )
+                for layer_idx in aux_indices
+            ]
+        else:
+            final['aux_outputs'] = []
         if dn_meta is not None:
             final['dn_meta'] = dn_meta
         return final

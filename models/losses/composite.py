@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from models.losses.matched import MatchedCurveLoss
-from models.losses.regularizers import DenoisingLoss, DistinctQueryLoss, OneToManyLoss, PositiveObjectLoss, TopKPositiveLoss
+from models.losses.regularizers import DenoisingLoss, DistinctQueryLoss, OneToManyLoss, PositiveObjectLoss
 from models.matcher import hungarian_curve_matching
 
 
@@ -14,7 +14,6 @@ WEIGHTED_TERM_SPECS = {
             'ctrl': 'ctrl_weight',
             'sample': 'sample_weight',
             'endpoint': 'endpoint_weight',
-            'bbox': 'bbox_weight',
             'giou': 'giou_weight',
             'curve_dist': 'curve_distance_weight',
         },
@@ -27,22 +26,8 @@ WEIGHTED_TERM_SPECS = {
             'ctrl': 'one_to_many_ctrl_weight',
             'sample': 'one_to_many_sample_weight',
             'endpoint': 'one_to_many_endpoint_weight',
-            'bbox': 'one_to_many_bbox_weight',
             'giou': 'one_to_many_giou_weight',
             'curve_dist': 'one_to_many_curve_distance_weight',
-        },
-    },
-    'topk_pos': {
-        'prefix': 'loss_topk_pos',
-        'outer_weight_key': 'topk_positive_weight',
-        'term_weight_keys': {
-            'ce': 'ce_weight',
-            'ctrl': 'ctrl_weight',
-            'sample': 'sample_weight',
-            'endpoint': 'endpoint_weight',
-            'bbox': 'bbox_weight',
-            'giou': 'giou_weight',
-            'curve_dist': 'curve_distance_weight',
         },
     },
 }
@@ -54,7 +39,6 @@ class ParametricEdgeLossComputer:
         self.matched_curve_loss = MatchedCurveLoss(config)
         self.positive_object_loss = PositiveObjectLoss(config)
         self.one_to_many_loss = OneToManyLoss(config, self.matched_curve_loss, self.positive_object_loss)
-        self.topk_positive_loss = TopKPositiveLoss(config, self.matched_curve_loss)
         self.distinct_query_loss = DistinctQueryLoss(config)
         self.denoising_loss = DenoisingLoss(config)
 
@@ -79,7 +63,6 @@ class ParametricEdgeLossComputer:
             targets=targets,
             control_cost=float(loss_cfg.get('control_cost', 5.0)),
             sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-            box_cost=float(loss_cfg.get('box_cost', 1.0)),
             giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
             curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
@@ -98,7 +81,6 @@ class ParametricEdgeLossComputer:
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
                 sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                box_cost=float(loss_cfg.get('box_cost', 1.0)),
                 giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
@@ -113,12 +95,6 @@ class ParametricEdgeLossComputer:
         for key, value in one_to_many.items():
             log_values[key] = value.detach()
         self._add_weighted_term_logs(log_values, 'om', loss_cfg)
-
-        topk = self.topk_positive_loss(outputs, targets)
-        total = total + float(loss_cfg.get('topk_positive_weight', 0.0)) * topk['loss_topk_pos']
-        for key, value in topk.items():
-            log_values[key] = value.detach()
-        self._add_weighted_term_logs(log_values, 'topk_pos', loss_cfg)
 
         loss_distinct = self.distinct_query_loss(outputs, targets)
         total = total + float(loss_cfg.get('distinct_weight', 0.0)) * loss_distinct

@@ -78,8 +78,6 @@ class MatchedCurveLoss(BaseLossComponent):
         target_classes = torch.full(pred_logits.shape[:2], 1, dtype=torch.long, device=device)
         matched_pred_curves = []
         matched_tgt_curves = []
-        matched_pred_boxes = []
-        matched_tgt_boxes = []
         matched_pair_weights = []
         for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
             if src_idx.numel() == 0:
@@ -87,16 +85,12 @@ class MatchedCurveLoss(BaseLossComponent):
             target_classes[batch_idx, src_idx] = 0
             matched_pred_curves.append(pred_curves[batch_idx, src_idx])
             matched_tgt_curves.append(targets[batch_idx]['curves'][tgt_idx].to(device))
-            matched_pred_boxes.append(curve_boxes_xyxy(pred_curves[batch_idx, src_idx]))
-            matched_tgt_boxes.append(targets[batch_idx]['boxes'][tgt_idx].to(device))
             if match_weights is not None:
                 matched_pair_weights.append(match_weights[batch_idx].to(device=device, dtype=pred_logits.dtype))
         loss_ce = self.classification(pred_logits, target_classes, query_weights=query_weights)
         if matched_pred_curves:
             matched_pred_curves = torch.cat(matched_pred_curves, dim=0)
             matched_tgt_curves = torch.cat(matched_tgt_curves, dim=0)
-            matched_pred_boxes = torch.cat(matched_pred_boxes, dim=0)
-            matched_tgt_boxes = torch.cat(matched_tgt_boxes, dim=0)
             ctrl_weights = matched_curve_weights(
                 targets,
                 indices,
@@ -127,8 +121,8 @@ class MatchedCurveLoss(BaseLossComponent):
             loss_ctrl = weighted_mean(ctrl_abs, ctrl_weights)
             endpoint_abs = torch.abs(matched_pred_curves[:, [0, -1]] - matched_tgt_curves[:, [0, -1]]).mean(dim=(1, 2))
             loss_endpoint = weighted_mean(endpoint_abs, endpoint_weights)
-            bbox_abs = torch.abs(matched_pred_boxes - matched_tgt_boxes).mean(dim=1)
-            loss_bbox = weighted_mean(bbox_abs, ctrl_weights)
+            matched_pred_boxes = curve_boxes_xyxy(matched_pred_curves)
+            matched_tgt_boxes = curve_boxes_xyxy(matched_tgt_curves)
             loss_giou = weighted_mean(1.0 - matched_generalized_box_iou(matched_pred_boxes, matched_tgt_boxes), ctrl_weights)
             curve_dist, curve_chamfer, curve_length = symmetric_curve_distance(
                 matched_pred_curves,
@@ -143,7 +137,6 @@ class MatchedCurveLoss(BaseLossComponent):
             zero = pred_curves.sum() * 0.0
             loss_ctrl = zero
             loss_endpoint = zero
-            loss_bbox = zero
             loss_giou = zero
             loss_curve_dist = zero
             loss_curve_chamfer = zero
@@ -153,7 +146,6 @@ class MatchedCurveLoss(BaseLossComponent):
             + float(weight_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
             + float(weight_cfg.get('sample_weight', 0.0)) * loss_curve_chamfer
             + float(weight_cfg.get('endpoint_weight', 2.0)) * loss_endpoint
-            + float(weight_cfg.get('bbox_weight', 2.0)) * loss_bbox
             + float(weight_cfg.get('giou_weight', 1.0)) * loss_giou
             + float(weight_cfg.get('curve_distance_weight', 2.0)) * loss_curve_dist
         )
@@ -163,7 +155,6 @@ class MatchedCurveLoss(BaseLossComponent):
             'loss_ctrl': loss_ctrl,
             'loss_sample': loss_curve_chamfer,
             'loss_endpoint': loss_endpoint,
-            'loss_bbox': loss_bbox,
             'loss_giou': loss_giou,
             'loss_curve_dist': loss_curve_dist,
             'loss_curve_chamfer': loss_curve_chamfer,

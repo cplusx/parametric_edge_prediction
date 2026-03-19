@@ -7,27 +7,31 @@ For active training entrypoints, run conventions, and non-ablation experiment no
 For ablation history and rerun bookkeeping, see [docs/parametric_edge_ablation_log.md](./parametric_edge_ablation_log.md).
 
 For a visual overview of how main queries, DN queries, and decoder refinement fit together, see [docs/query_flow_diagram.md](./query_flow_diagram.md).
+For a visual overview of how decoder outputs feed into the current loss stack, see [docs/loss_flow_diagram.md](./loss_flow_diagram.md).
 
 ## Current Default Stack
 
 Current default configuration now uses:
 
-- merged BSDS `train + val` supervision for optimization and BSDS `test` for validation and test
-- RGB image input from split-specific BSDS image roots
-- geometry-focused loss weights with bbox disabled and extent retained
+- LAION synthetic pretraining as the current default training entrypoint
+- RGB image input from LAION image roots with precomputed Bezier graph caches
+- geometry-focused loss weights with no separate bbox regression term and no separate extent branch/loss
 - `DINOv2` vision transformer backbone
 - FPN-like multi-scale feature pyramid built from DINOv2 intermediate features
 - two-stage proposal generation from encoded memory tokens
+- grouped queries now draw from a larger proposal pool; the main group keeps the strongest proposal chunk, while auxiliary groups sample randomized non-overlapping chunks from the remaining proposal pool instead of copying the same anchors to every group
 - deformable-style multi-scale decoder cross-attention
 - iterative reference-point refinement
 - denoising queries enabled
 - focal classification loss enabled
-- 2-GPU mixed-precision training for 500 epochs
-- validation visualization every 20 epochs plus training-set visualization every 500 iterations
+- cluster-oriented 4-GPU FP32 training for 200 epochs, with a 2-GPU fallback config
+- periodic validation visualization plus training-set visualization every 2000 iterations in the current LAION default
+- auxiliary decoder supervision computed on a strided subset of intermediate layers (`aux_layer_stride: 2`)
 
 Code:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
+- [configs/parametric_edge/bsds_formal.yaml](../configs/parametric_edge/bsds_formal.yaml)
 - [models/parametric_detr.py](../models/parametric_detr.py)
 - [models/losses.py](../models/losses.py)
 
@@ -35,11 +39,17 @@ Why:
 
 - The earlier `ResNet + vanilla DETR decoder` stack was sufficient for synthetic overfit diagnosis, but it was missing the backbone and query/proposal machinery that modern DETR systems rely on for stable training.
 
-## Formal BSDS Training Stack
+## TODO
+
+- Add a lean loss-stack ablation config that keeps only main matching + DN + one-to-many, and compare it against the current full stack with `topk_positive` and `distinct` enabled.
+- Revisit whether `dynamic_class_balance` is still needed when focal loss is already active, especially if score calibration remains unstable.
+
+
+## Historical BSDS Training Stack
 
 Current implementation:
 
-- Formal training is now the default config in [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml).
+- Historical BSDS training remains supported, but it is no longer the default entrypoint.
 - BSDS `train` and `val` annotation splits are merged for optimization.
 - BSDS `test` is used as the validation split for model selection.
 - Data roots are split explicitly by split name instead of overloading a single `input_root` / `edge_glob` pair.
@@ -53,7 +63,7 @@ Current formal model size:
 - `num_encoder_layers: 4`
 - `num_decoder_layers: 6`
 - `dim_feedforward: 1536`
-- `num_queries: 512`
+- `num_queries: 256`
 - `num_sampling_points: 8`
 
 Why:
@@ -63,7 +73,7 @@ Why:
 
 Status:
 
-- The formal config and runtime plumbing are in place in the default config.
+- The historical BSDS config and runtime plumbing are preserved in `configs/parametric_edge/bsds_formal.yaml`.
 - The split-aware formal cache benchmark completed successfully after warming 2696 graph-cache entries.
 - Validation plus test dataloader benchmarking covered 1609 samples at about 136.1 samples/sec overall, with p95 per-sample arrival about 46.6 ms.
 - A short 2-GPU DDP smoke test completed successfully after switching grouped-query training to `ddp_find_unused_parameters_true`.
@@ -71,15 +81,14 @@ Status:
 - That setting gives effective global batch size 40 and outperformed the tested `8 x 2` accumulation setting, while `12 x 2` was slower per sample.
 - Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
 - Grouped one-to-many and top-k auxiliary losses used to drop to zero on random training steps because the active group count was sampled uniformly from `1..group_limit`; the formal config now uses `group_detr_active_group_policy: max` so those grouped losses stay active consistently during training.
-- The extent heads were being logged but structurally gated off in the matched loss for the current parameterization; that gate is removed so extent losses now reflect the predicted normalized extent whenever the model emits extent logits.
-- The final formal default keeps extent enabled, sets `bbox_weight: 0.0`, uses `ce_weight: 5.5`, `ctrl_weight: 9.0`, `sample_weight: 6.0`, `endpoint_weight: 9.0`, `curve_distance_weight: 7.5`, `giou_weight: 0.15`, `one_to_many_weight: 1.0`, and `distinct_weight: 4.0`.
+- The current active stack removes the separate extent branch/loss and with geometry supervision concentrated in `ctrl`, `sample`, `endpoint`, `giou`, and `curve_distance` terms plus grouped auxiliary objectives.
 
 ## RGB Training Input
 
 Current implementation:
 
-- Default training now consumes RGB images from `edge_data/HED-BSDS/images/test`.
-- Edge supervision still comes from Bezierized annotations in `edge_data/HED-BSDS/gt_rgb/test`.
+- Current default training consumes RGB images from LAION image roots.
+- Supervision comes from precomputed Bezier graph caches built from LAION binary edge maps.
 
 Why:
 
@@ -675,21 +684,21 @@ Source:
 
 Current implementation:
 
-- Top-k positive supervision is now a grouped-query auxiliary-layer extension, not a repeated-target Hungarian path.
-- For each GT and each auxiliary decoder layer, matches from all active query groups are collected; if truncation is enabled, only the best `K` group matches are kept, otherwise all group matches are used.
-- Rank-dependent weights are applied with `topk_positive_tau`, and final-layer inference remains standard one-to-one.
+- Top-k positive supervision is now treated as an internal add-on to the final-layer one-to-many grouped branch, not as a separate auxiliary-layer loss.
+- For each auxiliary group at the final decoder layer, the grouped branch can keep the best `K` candidate queries per GT; if truncation is disabled, the grouped branch can use every candidate it finds.
+- Rank-dependent weights are applied with `topk_positive_tau`, while final inference still uses only the main one-to-one group.
 - Code:
-  - [models/losses/regularizers.py](../models/losses/regularizers.py), `TopKPositiveLoss`
+  - [models/losses/regularizers.py](../models/losses/regularizers.py), `OneToManyLoss`
   - [models/losses/matched.py](../models/losses/matched.py)
 
 Motivation:
 
-- Grouped training can expose up to `N` plausible matches per GT across groups, but using all of them all the time is often too permissive.
-- The useful control knob is therefore whether to truncate grouped positives, not whether to fall back to a different matching regime.
+- Grouped training can expose multiple plausible positives per GT inside the auxiliary groups, but treating all of them as equally strong positives makes score calibration noisy.
+- The useful control knob is therefore whether to truncate grouped positives and how strongly to weight lower-ranked grouped matches.
 
 Effect:
 
-- Keeps top-k semantically aligned with Group DETR-style grouped queries.
+- Keeps top-k semantically aligned with the one-to-many grouped branch instead of making it look like a separate supervision axis.
 - Allows `topk_positive_enabled=false` to mean “use every grouped positive,” which is the clean ablation baseline.
 
 Source:
