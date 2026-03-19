@@ -62,7 +62,6 @@ class ParametricEdgeVisualizer(pl.Callback):
             batch['targets'],
             control_cost=float(pl_module.config['loss'].get('control_cost', 5.0)),
             sample_cost=float(pl_module.config['loss'].get('sample_cost', 2.0)),
-            box_cost=float(pl_module.config['loss'].get('box_cost', 1.0)),
             giou_cost=float(pl_module.config['loss'].get('giou_cost', 1.0)),
             curve_distance_cost=float(pl_module.config['loss'].get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(pl_module.config['loss'].get('curve_match_point_count', 4)),
