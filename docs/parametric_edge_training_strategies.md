@@ -80,7 +80,7 @@ Status:
 - Short 2-GPU parameter probes selected `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2` as the best tested formal setting on RTX 3090 x2.
 - That setting gives effective global batch size 40 and outperformed the tested `8 x 2` accumulation setting, while `12 x 2` was slower per sample.
 - Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
-- Grouped one-to-many and top-k auxiliary losses used to drop to zero on random training steps because the active group count was sampled uniformly from `1..group_limit`; the formal config now uses `group_detr_active_group_policy: max` so those grouped losses stay active consistently during training.
+- Grouped training now uses a fixed `group_detr_num_groups: 3` during training and a single group during inference. The earlier dynamic active-group policy was removed after the query construction switched from duplicated groups to proposal-partitioned groups.
 - The current active stack removes the separate extent branch/loss and with geometry supervision concentrated in `ctrl`, `sample`, `endpoint`, `giou`, and `curve_distance` terms plus grouped auxiliary objectives.
 
 ## RGB Training Input
@@ -485,7 +485,7 @@ Source:
 
 Current implementation:
 
-- Uses Group DETR-style grouped training with `group_detr_num_groups` as the maximum number of query groups.
+- Uses grouped training with `group_detr_num_groups` as the fixed number of training-time groups.
 - The active group count is sampled uniformly from `[1, K_max]` after applying the per-batch cap, so sparse batches do not always force grouped training and eval/test stay strictly one-group.
 - Code:
   - Current Group DETR-style one-to-many no longer uses repeated-target Hungarian matching; extra query groups are supervised with per-group one-to-one matching while decoder self-attention is masked across groups during training.

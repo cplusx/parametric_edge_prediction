@@ -93,7 +93,7 @@ loss:
   aux_weight: 0.0
   dn_weight: 0.0
   dn_curve_weight: 0.0
-  group_detr_num_groups: 4
+  group_detr_num_groups: 3
   one_to_many_weight: 0.0
   one_to_many_ce_weight: 1.0
   one_to_many_ctrl_weight: 3.0

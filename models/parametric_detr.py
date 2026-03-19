@@ -259,32 +259,10 @@ class ParametricDETR(nn.Module):
         self.current_epoch = int(epoch)
 
     def _active_group_count(self, targets: Optional[List[dict]]) -> int:
-        if not self.training or self.group_detr_num_groups <= 1 or targets is None:
+        del targets
+        if not self.training or self.group_detr_num_groups <= 1:
             return 1
-        target_counts = []
-        for target in targets:
-            if 'num_targets' in target:
-                target_counts.append(int(target['num_targets']))
-            elif 'curves' in target:
-                target_counts.append(int(target['curves'].shape[0]))
-        if not target_counts:
-            return 1
-        max_target_count = max(target_counts)
-        if max_target_count <= 0:
-            return 1
-        # Fewer edges allow more supervised groups; dense edge maps fall back toward one group.
-        dynamic_group_limit = max(1, self.num_queries // max_target_count)
-        group_limit = max(1, min(self.group_detr_num_groups, dynamic_group_limit))
-        if group_limit <= 1:
-            return 1
-        policy = str(self.config['loss'].get('group_detr_active_group_policy', 'max')).lower()
-        if policy == 'random':
-            min_groups = int(self.config['loss'].get('group_detr_min_active_groups', 1))
-            min_groups = max(1, min(min_groups, group_limit))
-            return int(torch.randint(min_groups, group_limit + 1, (1,), device=self.query_content_embed.weight.device).item())
-        if policy == 'min':
-            return max(1, int(self.config['loss'].get('group_detr_min_active_groups', 1)))
-        return group_limit
+        return self.group_detr_num_groups
 
     def _flatten_multi_scale(self, feats: Sequence[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
         tokens = []

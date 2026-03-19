@@ -87,7 +87,7 @@ loss:
   aux_layer_stride: 2
   dn_weight: 3.0
   dn_curve_weight: 5.0
-  group_detr_num_groups: 4
+  group_detr_num_groups: 3
   one_to_many_weight: 1.0
   one_to_many_ce_weight: 1.5
   one_to_many_ctrl_weight: 9.0
@@ -103,8 +103,6 @@ loss:
   distinct_weight: 4.0
   distinct_topk: 32
   distinct_spatial_sigma: 0.12
-  group_detr_active_group_policy: max
-  group_detr_min_active_groups: 2
 
 optimizer:
   lr: 0.00002

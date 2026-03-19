@@ -39,7 +39,7 @@ loss:
   aux_weight: 0.5
   dn_weight: 1.0
   dn_curve_weight: 5.0
-  group_detr_num_groups: 4
+  group_detr_num_groups: 3
   one_to_many_weight: 0.2
   topk_positive_enabled: false
   topk_positive_per_gt: 2
