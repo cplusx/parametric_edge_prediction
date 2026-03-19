@@ -1,156 +1,20 @@
 # Parametric Edge Ablation Log
 
-This document records the ablations that have already been run in this repository, where their artifacts live, and how to rerun or extend them.
+This document is only for ablation history, rerun commands, and current ablation conclusions.
 
-This file should be updated whenever a new ablation is added, rerun, or materially reinterpreted.
+For active training entrypoints, cluster rules, dataset-cache behavior, and non-ablation experiment notes, see [docs/parametric_edge_experiment_log.md](./parametric_edge_experiment_log.md).
 
 ## Update Policy
 
-When adding a new ablation, update this file in the same change with:
+When adding or rerunning an ablation, update this file in the same change with:
 
 - the purpose of the ablation
-- the config file or script used to launch it
-- the exact command used to rerun it
-- the output directory
-- the summary or report file that records its result
+- the config or script used to launch it
+- the exact rerun command
+- the output directory or summary artifact
 - the current conclusion, if one exists
 
-If an ablation changes an existing default setting, also note which config was updated.
-
-## Environment
-
-The commands below assume the repo root is the working directory:
-
-```bash
-cd /home/viplab/jiaxin/parametric_edge_prediction
-conda activate diffusers
-```
-
-Core training entrypoint:
-
-```bash
-python train.py --config <config.yaml>
-python train.py --config <base_config.yaml> --override-config <override.yaml>
-```
-
-Config loading behavior:
-
-- If `--config` points to a non-`default.yaml` file and no override is provided, `configs/parametric_edge/default.yaml` is merged first.
-- If a config sets `_inherit_default: false`, it is treated as a standalone config and is loaded directly without merging `default.yaml`.
-- If `--override-config` is used, the override is merged on top of the config loaded by `--config`.
-- Historical overfit configs now live under `configs/parametric_edge/archived_overfit/` so the main config directory only contains current training entrypoints.
-- For the add-back suite below, use `archived_overfit/overfit_diverse16_2000_memorization_base.yaml` as the base config and the individual add-back file as the override.
-
-Current cluster LAION pretraining entrypoint:
-
-- Config: [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
-- Submission mode: direct `sbatch` only
-
-## Output Conventions
-
-Main ablation artifacts are currently written to:
-
-- `outputs/parametric_edge_training/current_sweep_analysis/`
-- `outputs/parametric_edge_training/current_sweep_analysis/matching_synthetic/`
-
-Training runs themselves write to experiment-specific directories under:
-
-- `outputs/parametric_edge_training/`
-
-Dataset-side cache artifacts are stored separately under:
-
-- `edge_data/HED-BSDS/cache/graph_polyline_v1_segments_xy_v5_anchor_consistent/`
-
-Those cache files are not source-controlled and should not be expected to appear in GitHub commits.
-
-## Formal Training Plan
-
-Purpose:
-
-- Move from overfit diagnostics to a proper BSDS train/val/test training run.
-
-Config:
-
-- [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
-
-Current intended command:
-
-```bash
-python train.py \
-  --config configs/parametric_edge/default.yaml
-```
-
-Current runtime design:
-
-- Train on BSDS `train`
-- Train on merged BSDS `train + val`
-- Validate on BSDS `test`
-- Use 2 GPUs with DDP and mixed precision
-- Keep both the best monitored checkpoint and `last.ckpt`
-- Use `ddp_find_unused_parameters_true` because grouped-query training activates only a subset of groups on some steps.
-- Use `batch_size: 10`, `val_batch_size: 10`, `accumulate_grad_batches: 2`, giving effective global batch size 40.
-- Use `channels_last: true` because it removes the observed DDP grad-stride warning and slightly improves short-run throughput.
-- Use the selected geometry-focused loss setting with `bbox_weight: 0.0` and `extent_weight: 1.0`.
-- Record training-set visualizations every 500 iterations in addition to periodic validation visualizations.
-
-Status:
-
-- Config and runtime support are checked in.
-- Split-aware cache warmup and benchmark now complete successfully.
-- Quick 2-GPU parameter probes under the formal config found `batch_size: 10`, `accumulate_grad_batches: 2` to be the best tested setting among the checked `8 x 2`, `10 x 2`, and `12 x 2` per-GPU batch candidates.
-- A short A/B benchmark showed that enabling `channels_last` removes the 1x1-conv grad-stride warning seen under DDP and marginally improves wall time on the same 8-batch micro-run.
-- The grouped auxiliary losses are now forced to stay active during training by using the maximum valid group count instead of random `1..K` sampling; this removes the previous step-to-step zero spikes in `loss_om_*` and `loss_topk_pos_*`.
-- The temporary 50-epoch search configs and search-run artifacts were removed after selecting the final default recipe.
-- The first full formal run should use the default config directly, since the selected setting is now folded into [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml).
-
-## LAION Cluster Pretraining
-
-Purpose:
-
-- Run LAION-only pretraining on the cluster from a committed repo config instead of generating training semantics on the cluster.
-
-Config:
-
-- [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
-
-Current intended command on cluster:
-
-```bash
-sbatch <<'EOF'
-#!/usr/bin/env bash
-#SBATCH -J laion-pretrain-h100-4gpu-q512-eb256-lr5e5-fp32
-#SBATCH -p gbunchQ
-#SBATCH --gres=gpu:4
-#SBATCH -c 32
-#SBATCH --mem=64G
-#SBATCH -t 3-00:00:00
-#SBATCH -o ~/cluster_runs/parametric_edge_prediction/%x-%j.out
-#SBATCH -e ~/cluster_runs/parametric_edge_prediction/%x-%j.err
-
-set -euo pipefail
-set +u
-source "$HOME/anaconda3/etc/profile.d/conda.sh"
-conda activate diffusers
-set -u
-cd ~/parametric_edge_prediction
-python train.py --config configs/parametric_edge/laion_pretrain_cluster.yaml
-EOF
-```
-
-Runtime rule:
-
-- Change training/data settings in the committed config file first.
-- Do not introduce a local wrapper submit script for this repo.
-- Use plain `sbatch` scripts or inline `sbatch <<'EOF' ... EOF` directly on cluster.
-- If a temporary batch file is needed, keep it on the cluster checkout only and do not commit it.
-- Do not generate cluster-only data/training overrides unless they are explicitly required for log/output paths.
-- Current cluster pretraining uses full FP32, not mixed precision.
-- Current primary FP32 cluster profile uses `batch_size: 16`, `accumulate_grad_batches: 4`, `num_queries: 512`, and `hidden_dim: 320` on 4 GPUs.
-- Current committed fallback config is [configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml](../configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml), which keeps `batch_size: 16` and uses `accumulate_grad_batches: 8` on 2 GPUs.
-- LAION cluster runs log to the dedicated W&B project `laion_parametric_edge_prediction`, not the BSDS/default project.
-- For `gbunchQ`, use `3-00:00:00` by default; for other partitions, use that partition's actual maximum time explicitly in the `sbatch` header.
-- Future run names should omit hardware labels and keep only experiment semantics.
-- LAION sample discovery now writes `laion_entry_cache.txt` under the LAION data root and reuses it on later starts.
+If an ablation changes a default training decision, also record that decision in [docs/parametric_edge_experiment_log.md](./parametric_edge_experiment_log.md).
 
 Important reset on 2026-03-14:
 

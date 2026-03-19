@@ -78,23 +78,24 @@ class TopKPositiveLoss(BaseLossComponent):
                 continue
 
             candidates: List[List[Tuple[float, int]]] = [[] for _ in range(tgt_curves.shape[0])]
-            for group_idx in range(num_groups):
-                total_cost = build_curve_cost_matrix(
-                    logits=grouped_logits[batch_idx, group_idx],
-                    curves=grouped_curves[batch_idx, group_idx],
-                    tgt_curves=tgt_curves,
-                    tgt_boxes=tgt_boxes,
-                    control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                    sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                    box_cost=float(loss_cfg.get('box_cost', 1.0)),
-                    giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
-                    curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
-                    curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-                    num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                )
-                row_ind, col_ind = linear_sum_assignment(total_cost.detach().cpu().numpy())
-                for src_idx, tgt_idx in zip(row_ind.tolist(), col_ind.tolist()):
-                    candidates[tgt_idx].append((float(total_cost[src_idx, tgt_idx].item()), group_idx * num_queries + src_idx))
+            with torch.no_grad():
+                for group_idx in range(num_groups):
+                    total_cost = build_curve_cost_matrix(
+                        logits=grouped_logits[batch_idx, group_idx],
+                        curves=grouped_curves[batch_idx, group_idx],
+                        tgt_curves=tgt_curves,
+                        tgt_boxes=tgt_boxes,
+                        control_cost=float(loss_cfg.get('control_cost', 5.0)),
+                        sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
+                        box_cost=float(loss_cfg.get('box_cost', 1.0)),
+                        giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
+                        curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                        curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
+                        num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                    )
+                    row_ind, col_ind = linear_sum_assignment(total_cost.cpu().numpy())
+                    for src_idx, tgt_idx in zip(row_ind.tolist(), col_ind.tolist()):
+                        candidates[tgt_idx].append((float(total_cost[src_idx, tgt_idx].item()), group_idx * num_queries + src_idx))
 
             batch_src = []
             batch_tgt = []
@@ -260,20 +261,21 @@ class DistinctQueryLoss(BaseLossComponent):
                 selected_refs = grouped_refs[batch_idx, group_idx, idx]
                 selected_prob = prob[idx]
                 selected_curves = grouped_curves[batch_idx, group_idx, idx]
-                total_cost = build_curve_cost_matrix(
-                    logits=grouped_logits[batch_idx, group_idx, idx],
-                    curves=selected_curves,
-                    tgt_curves=tgt_curves,
-                    tgt_boxes=tgt_boxes,
-                    control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                    sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                    box_cost=float(loss_cfg.get('box_cost', 1.0)),
-                    giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
-                    curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
-                    curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-                    num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                )
-                assigned_gt = total_cost.argmin(dim=1)
+                with torch.no_grad():
+                    total_cost = build_curve_cost_matrix(
+                        logits=grouped_logits[batch_idx, group_idx, idx],
+                        curves=selected_curves,
+                        tgt_curves=tgt_curves,
+                        tgt_boxes=tgt_boxes,
+                        control_cost=float(loss_cfg.get('control_cost', 5.0)),
+                        sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
+                        box_cost=float(loss_cfg.get('box_cost', 1.0)),
+                        giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
+                        curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                        curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
+                        num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                    )
+                    assigned_gt = total_cost.argmin(dim=1)
                 h = F.normalize(selected_hidden, dim=-1)
                 sim = torch.matmul(h, h.transpose(0, 1)).pow(2)
                 dist = torch.cdist(selected_refs, selected_refs)

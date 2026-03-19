@@ -9,6 +9,12 @@ from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_
 from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_graph, load_image_array_original, unpack_polylines
 
 SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
+LAION_ENTRY_CACHE_PROBE_COUNT = 32
+LAION_ENTRY_CACHE_MIN_VALID_RATIO = 0.7
+LAION_RUNTIME_FALLBACK_MIN_VALID_RATIO = 0.5
+LAION_SAMPLE_LOAD_RETRY_LIMIT = 8
+LAION_SAMPLE_LOAD_EXCEPTIONS = (FileNotFoundError, OSError, ValueError, KeyError, EOFError)
+_LAION_ENTRY_CACHE_MEMO: Dict[Path, Dict[str, object]] = {}
 
 
 def _laion_entry_cache_path(data_root: Path) -> Path:
@@ -25,9 +31,43 @@ def _filter_laion_sample_records_by_batches(
     return [record for record in records if str(record['batch_name']) in allowed_batches]
 
 
+def _record_paths_exist(record: Dict[str, Path]) -> bool:
+    return Path(record['image_path']).exists() and Path(record['edge_path']).exists() and Path(record['cache_path']).exists()
+
+
+def _probe_record_indices(records: Sequence[Dict[str, Path]], probe_count: int) -> List[int]:
+    if not records:
+        return []
+    capped_count = max(1, min(int(probe_count), len(records)))
+    if capped_count >= len(records):
+        return list(range(len(records)))
+    if capped_count == 1:
+        return [0]
+    return sorted({int(round(position * (len(records) - 1) / (capped_count - 1))) for position in range(capped_count)})
+
+
+def _probe_laion_sample_records(
+    records: Sequence[Dict[str, Path]],
+    probe_count: int,
+) -> Dict[str, object]:
+    probe_indices = _probe_record_indices(records, probe_count=probe_count)
+    valid_indices = [record_index for record_index in probe_indices if _record_paths_exist(records[record_index])]
+    ratio = float(len(valid_indices)) / float(len(probe_indices)) if probe_indices else 0.0
+    return {
+        'probe_indices': probe_indices,
+        'valid_indices': valid_indices,
+        'valid_ratio': ratio,
+    }
+
+
 def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
     if not cache_path.exists():
         return []
+    cache_path = cache_path.resolve()
+    cache_stat = cache_path.stat()
+    memo_entry = _LAION_ENTRY_CACHE_MEMO.get(cache_path)
+    if memo_entry is not None and memo_entry['mtime_ns'] == cache_stat.st_mtime_ns:
+        return list(memo_entry['records'])
     records: List[Dict[str, Path]] = []
     with cache_path.open('r', encoding='utf-8') as handle:
         for raw_line in handle:
@@ -41,8 +81,6 @@ def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
             image_path = Path(image_path_str)
             edge_path = Path(edge_path_str)
             graph_cache_path = Path(graph_cache_path_str)
-            if not image_path.exists() or not edge_path.exists() or not graph_cache_path.exists():
-                continue
             records.append({
                 'batch_name': batch_name,
                 'image_id': image_id,
@@ -50,6 +88,15 @@ def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
                 'edge_path': edge_path,
                 'cache_path': graph_cache_path,
             })
+    probe_result = _probe_laion_sample_records(records, probe_count=LAION_ENTRY_CACHE_PROBE_COUNT)
+    if not probe_result['valid_indices']:
+        return []
+    if float(probe_result['valid_ratio']) < LAION_ENTRY_CACHE_MIN_VALID_RATIO:
+        return []
+    _LAION_ENTRY_CACHE_MEMO[cache_path] = {
+        'mtime_ns': cache_stat.st_mtime_ns,
+        'records': tuple(records),
+    }
     return records
 
 
@@ -167,6 +214,8 @@ class LaionSyntheticEdgeDataset(Dataset):
         rgb_input: bool = True,
     ) -> None:
         self.sample_records = list(sample_records)
+        if not self.sample_records:
+            raise ValueError('sample_records must not be empty')
         self.image_size = int(image_size)
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)
@@ -175,17 +224,37 @@ class LaionSyntheticEdgeDataset(Dataset):
         self.train_augment = bool(train_augment)
         self.augment_cfg = dict(augment_cfg or {})
         self.rgb_input = bool(rgb_input)
+        self.max_load_attempts = max(1, min(LAION_SAMPLE_LOAD_RETRY_LIMIT, len(self.sample_records)))
+        probe_result = _probe_laion_sample_records(self.sample_records, probe_count=LAION_ENTRY_CACHE_PROBE_COUNT)
+        self.known_good_indices = list(probe_result['valid_indices'])
+        if not self.known_good_indices:
+            raise FileNotFoundError('No readable LAION samples were found in the startup probe set.')
+        if float(probe_result['valid_ratio']) < LAION_RUNTIME_FALLBACK_MIN_VALID_RATIO:
+            raise RuntimeError(
+                'Too many unreadable LAION samples in the startup probe set; rebuild the cache or verify dataset paths.'
+            )
 
     def __len__(self) -> int:
         return len(self.sample_records)
 
-    def __getitem__(self, index: int) -> Dict:
-        record = self.sample_records[index]
+    def _choose_fallback_index(self, base_index: int, attempt: int, tried_indices: set) -> Optional[int]:
+        remaining_known_good = [index for index in self.known_good_indices if index not in tried_indices]
+        if remaining_known_good:
+            rng = np.random.default_rng((torch.initial_seed() + base_index * 9973 + attempt) % (2 ** 32))
+            return int(remaining_known_good[int(rng.integers(len(remaining_known_good)))])
+        remaining_indices = [index for index in range(len(self.sample_records)) if index not in tried_indices]
+        if not remaining_indices:
+            return None
+        rng = np.random.default_rng((torch.initial_seed() + base_index * 9973 + attempt * 17) % (2 ** 32))
+        return int(remaining_indices[int(rng.integers(len(remaining_indices)))])
+
+    def _load_item_from_index(self, record_index: int) -> Dict:
+        record = self.sample_records[record_index]
         graph_data = load_cached_graph(Path(record['cache_path']))
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-        rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+        rng = np.random.default_rng((torch.initial_seed() + record_index) % (2 ** 32))
         if self.split == 'train' and self.train_augment:
             image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
                 image=image,
@@ -217,6 +286,8 @@ class LaionSyntheticEdgeDataset(Dataset):
         curvatures = torch.from_numpy(target_data.get('curve_curvatures', target_data['curve_lengths'] * 0.0)).float()
         labels = torch.ones((curves.shape[0],), dtype=torch.long)
         sample_id = f"{record['batch_name']}_{record['image_id']}"
+        if record_index not in self.known_good_indices and _record_paths_exist(record):
+            self.known_good_indices.append(record_index)
         return {
             'image': torch.from_numpy(image_chw).float(),
             'target': {
@@ -236,3 +307,22 @@ class LaionSyntheticEdgeDataset(Dataset):
                 'dataset_name': 'laion_synthetic',
             },
         }
+
+    def __getitem__(self, index: int) -> Dict:
+        last_error = None
+        tried_indices = set()
+        candidate_index = int(index) % len(self.sample_records)
+        for attempt in range(self.max_load_attempts):
+            if candidate_index in tried_indices:
+                candidate_index = self._choose_fallback_index(index, attempt, tried_indices)
+                if candidate_index is None:
+                    break
+            tried_indices.add(candidate_index)
+            try:
+                return self._load_item_from_index(candidate_index)
+            except LAION_SAMPLE_LOAD_EXCEPTIONS as error:
+                last_error = error
+                candidate_index = self._choose_fallback_index(index, attempt + 1, tried_indices)
+                if candidate_index is None:
+                    break
+        raise RuntimeError(f'Unable to load a readable LAION sample after {len(tried_indices)} attempts.') from last_error
