@@ -2,10 +2,13 @@ from typing import List, Tuple
 
 import torch
 from scipy.optimize import linear_sum_assignment
+from misc_utils.train_utils import sample_bezier_curves_torch
 from models.geometry import (
     curve_boxes_xyxy,
     pairwise_aligned_curve_l1_cost,
     pairwise_aligned_sample_l1_cost,
+    pairwise_curve_l1_forward_reverse_cost,
+    pairwise_sample_l1_forward_reverse_cost,
     pairwise_curve_chamfer_cost,
     pairwise_generalized_box_iou,
 )
@@ -22,18 +25,36 @@ def _build_cost_matrix(
     curve_distance_cost: float,
     curve_match_point_count: int,
     num_curve_samples: int,
+    direction_invariant: bool = True,
 ) -> torch.Tensor:
-    ctrl_cost = pairwise_aligned_curve_l1_cost(curves, tgt_curves)
-    sample_cost_matrix = pairwise_aligned_sample_l1_cost(curves, tgt_curves, num_samples=num_curve_samples)
+    if direction_invariant:
+        ctrl_forward, ctrl_reverse = pairwise_curve_l1_forward_reverse_cost(curves, tgt_curves)
+        sample_forward, sample_reverse = pairwise_sample_l1_forward_reverse_cost(
+            curves,
+            tgt_curves,
+            num_samples=num_curve_samples,
+        )
+    else:
+        ctrl_cost = torch.cdist(curves.reshape(curves.shape[0], -1), tgt_curves.reshape(tgt_curves.shape[0], -1), p=1)
+        sampled_pred = sample_bezier_curves_torch(curves, num_samples=num_curve_samples).reshape(curves.shape[0], -1)
+        sampled_tgt = sample_bezier_curves_torch(tgt_curves, num_samples=num_curve_samples).reshape(tgt_curves.shape[0], -1)
+        sample_cost_matrix = torch.cdist(sampled_pred, sampled_tgt, p=1)
     pred_boxes = curve_boxes_xyxy(curves)
     giou_cost_matrix = 1.0 - pairwise_generalized_box_iou(pred_boxes, tgt_boxes)
     curve_distance_cost_matrix = pairwise_curve_chamfer_cost(curves, tgt_curves, point_count=curve_match_point_count)
-    total = (
-        control_cost * ctrl_cost
-        + sample_cost * sample_cost_matrix
-        + giou_cost * giou_cost_matrix
-        + curve_distance_cost * curve_distance_cost_matrix
-    )
+    if direction_invariant:
+        oriented_cost = torch.minimum(
+            control_cost * ctrl_forward + sample_cost * sample_forward,
+            control_cost * ctrl_reverse + sample_cost * sample_reverse,
+        )
+        total = oriented_cost + giou_cost * giou_cost_matrix + curve_distance_cost * curve_distance_cost_matrix
+    else:
+        total = (
+            control_cost * ctrl_cost
+            + sample_cost * sample_cost_matrix
+            + giou_cost * giou_cost_matrix
+            + curve_distance_cost * curve_distance_cost_matrix
+        )
     return total
 
 
@@ -48,6 +69,7 @@ def build_curve_cost_matrix(
     curve_distance_cost: float,
     curve_match_point_count: int,
     num_curve_samples: int,
+    direction_invariant: bool = True,
 ) -> torch.Tensor:
     return _build_cost_matrix(
         logits=logits,
@@ -60,6 +82,7 @@ def build_curve_cost_matrix(
         curve_distance_cost=curve_distance_cost,
         curve_match_point_count=curve_match_point_count,
         num_curve_samples=num_curve_samples,
+        direction_invariant=direction_invariant,
     )
 
 
@@ -74,6 +97,7 @@ def hungarian_curve_matching(
     curve_distance_cost: float = 0.0,
     curve_match_point_count: int = 4,
     num_curve_samples: int = 16,
+    direction_invariant: bool = True,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     indices = []
     for batch_idx, target in enumerate(targets):
@@ -93,6 +117,7 @@ def hungarian_curve_matching(
             curve_distance_cost=curve_distance_cost,
             curve_match_point_count=curve_match_point_count,
             num_curve_samples=num_curve_samples,
+            direction_invariant=direction_invariant,
         )
         row_ind, col_ind = linear_sum_assignment(total_cost.detach().cpu().numpy())
         indices.append((torch.as_tensor(row_ind, dtype=torch.long, device=curves.device), torch.as_tensor(col_ind, dtype=torch.long, device=curves.device)))

@@ -4,8 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from models.geometry import (
-    aligned_curve_l1,
-    aligned_endpoint_l1,
+    aligned_curve_endpoint_l1,
     curve_boxes_xyxy,
     matched_generalized_box_iou,
     symmetric_curve_distance,
@@ -80,6 +79,7 @@ class MatchedCurveLoss(BaseLossComponent):
     ) -> Dict[str, torch.Tensor]:
         loss_cfg = self.config['loss']
         weight_cfg = loss_cfg if loss_weight_overrides is None else {**loss_cfg, **loss_weight_overrides}
+        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         device = pred_logits.device
         target_classes = torch.full(pred_logits.shape[:2], 1, dtype=torch.long, device=device)
         matched_pred_curves = []
@@ -123,22 +123,41 @@ class MatchedCurveLoss(BaseLossComponent):
                 ctrl_weights = ctrl_weights * pair_weights
                 endpoint_weights = endpoint_weights * pair_weights
                 curve_weights = curve_weights * pair_weights
-            ctrl_abs, oriented_tgt_curves = aligned_curve_l1(matched_pred_curves, matched_tgt_curves)
+            if direction_invariant:
+                ctrl_abs, endpoint_abs, oriented_tgt_curves = aligned_curve_endpoint_l1(
+                    matched_pred_curves,
+                    matched_tgt_curves,
+                    ctrl_weight=float(weight_cfg.get('ctrl_weight', 1.0)),
+                    endpoint_weight=float(weight_cfg.get('endpoint_weight', 1.0)),
+                )
+            else:
+                ctrl_abs = torch.abs(matched_pred_curves - matched_tgt_curves).mean(dim=(1, 2))
+                oriented_tgt_curves = matched_tgt_curves
+                endpoint_abs = torch.abs(
+                    matched_pred_curves[:, [0, -1]] - matched_tgt_curves[:, [0, -1]]
+                ).mean(dim=(1, 2))
             loss_ctrl = weighted_mean(ctrl_abs, ctrl_weights)
-            endpoint_abs = aligned_endpoint_l1(matched_pred_curves, matched_tgt_curves)
             loss_endpoint = weighted_mean(endpoint_abs, endpoint_weights)
             matched_pred_boxes = curve_boxes_xyxy(matched_pred_curves)
             matched_tgt_boxes = curve_boxes_xyxy(oriented_tgt_curves)
             loss_giou = weighted_mean(1.0 - matched_generalized_box_iou(matched_pred_boxes, matched_tgt_boxes), ctrl_weights)
-            curve_dist, curve_chamfer, curve_length = symmetric_curve_distance(
-                matched_pred_curves,
-                oriented_tgt_curves,
-                num_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                length_weight=float(loss_cfg.get('curve_distance_length_weight', 0.25)),
-            )
-            loss_curve_dist = weighted_mean(curve_dist, curve_weights)
-            loss_curve_chamfer = weighted_mean(curve_chamfer, curve_weights)
-            loss_curve_length = weighted_mean(curve_length, curve_weights)
+            sample_weight = float(weight_cfg.get('sample_weight', 0.0))
+            curve_distance_weight = float(weight_cfg.get('curve_distance_weight', 0.0))
+            if sample_weight > 0.0 or curve_distance_weight > 0.0:
+                curve_dist, curve_chamfer, curve_length = symmetric_curve_distance(
+                    matched_pred_curves,
+                    oriented_tgt_curves,
+                    num_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                    length_weight=float(loss_cfg.get('curve_distance_length_weight', 0.25)),
+                )
+                loss_curve_dist = weighted_mean(curve_dist, curve_weights)
+                loss_curve_chamfer = weighted_mean(curve_chamfer, curve_weights)
+                loss_curve_length = weighted_mean(curve_length, curve_weights)
+            else:
+                zero = matched_pred_curves.sum() * 0.0
+                loss_curve_dist = zero
+                loss_curve_chamfer = zero
+                loss_curve_length = zero
         else:
             zero = pred_curves.sum() * 0.0
             loss_ctrl = zero

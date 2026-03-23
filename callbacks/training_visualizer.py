@@ -66,6 +66,7 @@ class ParametricEdgeVisualizer(pl.Callback):
             curve_distance_cost=float(pl_module.config['loss'].get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(pl_module.config['loss'].get('curve_match_point_count', 4)),
             num_curve_samples=int(pl_module.config['loss'].get('num_curve_samples', 16)),
+            direction_invariant=bool(pl_module.config['loss'].get('direction_invariant', True)),
         )
         matched_curves: List[torch.Tensor] = []
         for batch_id, (src_idx, _) in enumerate(matched_indices):

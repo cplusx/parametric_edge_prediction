@@ -77,6 +77,7 @@ Current status:
 
 - The LAION cluster pretraining recipe is now the default config.
 - The grouped auxiliary losses are forced to remain active by using the maximum valid group count instead of random `1..K` sampling.
+- Following the 2026-03-23 single-image overfit diagnosis, the main training configs disable `giou_cost`, `giou_weight`, and `one_to_many_giou_weight`; `curve_distance` remains active.
 - Historical BSDS training remains available as a separate path, but is no longer the default entrypoint.
 - Use `configs/parametric_edge/bsds_formal.yaml` when you explicitly want the BSDS recipe.
 

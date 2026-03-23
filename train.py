@@ -104,6 +104,9 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config, args.override_config)
+    seed = config.get('trainer', {}).get('seed')
+    if seed is not None:
+        pl.seed_everything(int(seed), workers=True)
     torch.set_float32_matmul_precision('high')
     root_dir = Path(config['trainer']['default_root_dir'])
     root_dir.mkdir(parents=True, exist_ok=True)

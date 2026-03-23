@@ -197,7 +197,7 @@ Status:
 - That setting gives effective global batch size 40 and outperformed the tested `8 x 2` accumulation setting, while `12 x 2` was slower per sample.
 - Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
 - Grouped training now uses a fixed `group_detr_num_groups: 3` during training and a single group during inference. The earlier dynamic active-group policy was removed after the query construction switched from duplicated groups to proposal-partitioned groups.
-- The current active stack removes the separate extent branch/loss and with geometry supervision concentrated in `ctrl`, `sample`, `endpoint`, `giou`, and `curve_distance` terms plus grouped auxiliary objectives.
+- The current active stack removes the separate extent branch/loss and keeps geometry supervision concentrated in `ctrl`, `sample`, `endpoint`, and `curve_distance` terms plus grouped auxiliary objectives.
 
 ## RGB Training Input
 
@@ -949,3 +949,41 @@ The next likely improvement is an anchor-aware curve length prior:
 Motivation:
 
 - After fixing collapse, the remaining failure mode is under-extended curves rather than total spatial misallocation.
+
+## 2026-03-23 Single-Image Overfit Findings
+
+Purpose:
+
+- Separate model-structure problems from loss-design problems with deterministic single-image overfit runs.
+
+Controlled setup:
+
+- Single image: `100007_ann1.png`
+- Deterministic seed
+- `group_detr_num_groups: 1`
+- `one-to-many`, `DN`, `top-k`, `distinct`, and `aux` disabled
+- Same small model across runs
+
+Main findings:
+
+- `query_source: two_stage` was a major memorization bottleneck.
+- Switching the same setup to `query_source: learned` changed single-image overfit from partial memorization to near-perfect fit.
+- This means the two-stage proposal prior is useful for full training, but it is a poor diagnostic query source for single-image memorization.
+
+Loss findings:
+
+- `ce + ctrl + endpoint` with `learned` queries overfit cleanly.
+- Adding `curve_distance` back by itself still overfit cleanly and did not introduce many high-score false positives.
+- Adding `giou` back by itself substantially degraded overfit and produced many medium/high-score false positives.
+- Adding `giou + curve_distance` together behaved similarly to the `giou` case, so the main blocker was `giou`, not `curve_distance`.
+
+Current interpretation:
+
+- `giou` is not a safe default geometry term for the current parametric-curve formulation.
+- The present curve-box GIoU interacts badly with classification calibration and single-image fitting.
+- Based on this result, the main training configs now disable `giou_cost`, `giou_weight`, and `one_to_many_giou_weight`.
+
+Scope note:
+
+- The `learned`-query result is strong enough to guide future overfit diagnostics.
+- It is not yet treated as sufficient evidence to replace the production `two_stage` query source in the main LAION training recipe.

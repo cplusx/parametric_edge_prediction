@@ -17,6 +17,9 @@ WEIGHTED_TERM_SPECS = {
             'giou': 'giou_weight',
             'curve_dist': 'curve_distance_weight',
         },
+        'term_weight_defaults': {
+            'giou': 1.0,
+        },
     },
     'om': {
         'prefix': 'loss_om',
@@ -28,6 +31,9 @@ WEIGHTED_TERM_SPECS = {
             'endpoint': 'one_to_many_endpoint_weight',
             'giou': 'one_to_many_giou_weight',
             'curve_dist': 'one_to_many_curve_distance_weight',
+        },
+        'term_weight_defaults': {
+            'giou': 1.0,
         },
     },
 }
@@ -48,15 +54,17 @@ class ParametricEdgeLossComputer:
         outer_weight = 1.0
         if spec['outer_weight_key'] is not None:
             outer_weight = float(loss_cfg.get(spec['outer_weight_key'], 0.0))
+        term_weight_defaults = spec.get('term_weight_defaults', {})
         for term_name, term_weight_key in spec['term_weight_keys'].items():
             raw_key = f'{prefix}_{term_name}'
             if raw_key not in log_values:
                 continue
-            inner_weight = float(loss_cfg.get(term_weight_key, 0.0))
+            inner_weight = float(loss_cfg.get(term_weight_key, term_weight_defaults.get(term_name, 0.0)))
             log_values[f'{raw_key}_weighted'] = log_values[raw_key] * (outer_weight * inner_weight)
 
     def __call__(self, outputs: Dict, targets: List[dict]) -> Dict:
         loss_cfg = self.config['loss']
+        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         indices = hungarian_curve_matching(
             logits=outputs['pred_logits'],
             curves=outputs['pred_curves'],
@@ -67,6 +75,7 @@ class ParametricEdgeLossComputer:
             curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
             num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+            direction_invariant=direction_invariant,
         )
         base = self.matched_curve_loss(outputs['pred_curves'], outputs['pred_logits'], targets, indices, outputs)
         total = base['loss_total']
@@ -85,6 +94,7 @@ class ParametricEdgeLossComputer:
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                direction_invariant=direction_invariant,
             )
             aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
             total = total + aux_weight * aux_losses['loss_total']

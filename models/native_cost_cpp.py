@@ -23,7 +23,6 @@ torch::Tensor aligned_curve_l1_cost_impl(torch::Tensor pred, torch::Tensor tgt) 
     auto tgt_a = tgt.accessor<scalar_t, 3>();
     auto out_a = out.accessor<scalar_t, 2>();
 
-    const scalar_t denom = static_cast<scalar_t>(num_ctrl * 2);
     for (int64_t i = 0; i < num_pred; ++i) {
         for (int64_t j = 0; j < num_tgt; ++j) {
             scalar_t forward = 0;
@@ -35,7 +34,7 @@ torch::Tensor aligned_curve_l1_cost_impl(torch::Tensor pred, torch::Tensor tgt) 
                 reverse += std::abs(pred_a[i][k][0] - tgt_a[j][rk][0]);
                 reverse += std::abs(pred_a[i][k][1] - tgt_a[j][rk][1]);
             }
-            out_a[i][j] = std::min(forward, reverse) / denom;
+            out_a[i][j] = std::min(forward, reverse);
         }
     }
     return out;
@@ -52,7 +51,6 @@ torch::Tensor aligned_sample_l1_cost_impl(torch::Tensor pred, torch::Tensor tgt)
     auto tgt_a = tgt.accessor<scalar_t, 3>();
     auto out_a = out.accessor<scalar_t, 2>();
 
-    const scalar_t denom = static_cast<scalar_t>(num_pts * 2);
     for (int64_t i = 0; i < num_pred; ++i) {
         for (int64_t j = 0; j < num_tgt; ++j) {
             scalar_t forward = 0;
@@ -64,7 +62,7 @@ torch::Tensor aligned_sample_l1_cost_impl(torch::Tensor pred, torch::Tensor tgt)
                 reverse += std::abs(pred_a[i][k][0] - tgt_a[j][rk][0]);
                 reverse += std::abs(pred_a[i][k][1] - tgt_a[j][rk][1]);
             }
-            out_a[i][j] = std::min(forward, reverse) / denom;
+            out_a[i][j] = std::min(forward, reverse);
         }
     }
     return out;

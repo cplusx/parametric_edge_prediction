@@ -74,6 +74,7 @@ class DistinctQueryLoss(BaseLossComponent):
             return grouped_hidden.sum() * 0.0
         batch_losses = []
         loss_cfg = self.config['loss']
+        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         for batch_idx in range(grouped_hidden.shape[0]):
             tgt_curves = targets[batch_idx]['curves'].to(grouped_hidden.device)
             tgt_boxes = targets[batch_idx]['boxes'].to(grouped_hidden.device)
@@ -103,6 +104,7 @@ class DistinctQueryLoss(BaseLossComponent):
                         curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                         curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                         num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                        direction_invariant=direction_invariant,
                     )
                     assigned_gt = total_cost.argmin(dim=1)
                 h = F.normalize(selected_hidden, dim=-1)
@@ -149,6 +151,7 @@ class OneToManyLoss(BaseLossComponent):
         topk_per_target: int,
     ) -> Tuple[List[Tuple[torch.Tensor, torch.Tensor]], List[torch.Tensor], torch.Tensor]:
         loss_cfg = self.config['loss']
+        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         batch_size, num_queries = group_logits.shape[:2]
         device = group_logits.device
         dtype = group_logits.dtype
@@ -176,6 +179,7 @@ class OneToManyLoss(BaseLossComponent):
                     curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                     curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                     num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                    direction_invariant=direction_invariant,
                 )
 
             selected_by_src: Dict[int, Tuple[float, int, torch.Tensor]] = {}
@@ -228,6 +232,7 @@ class OneToManyLoss(BaseLossComponent):
                 'loss_om_topk': zero,
             }
         loss_cfg = self.config['loss']
+        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         om_weight_overrides = {
             'ce_weight': float(loss_cfg.get('one_to_many_ce_weight', loss_cfg.get('ce_weight', 1.0))),
             'ctrl_weight': float(loss_cfg.get('one_to_many_ctrl_weight', loss_cfg.get('ctrl_weight', 5.0))),
@@ -251,6 +256,7 @@ class OneToManyLoss(BaseLossComponent):
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
+                direction_invariant=direction_invariant,
             )
             group_summaries.append(
                 self.matched_curve_loss(

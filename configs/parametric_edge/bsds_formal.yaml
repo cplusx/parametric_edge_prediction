@@ -70,7 +70,7 @@ loss:
   focal_gamma: 2.0
   control_cost: 1.5
   sample_cost: 2.0
-  giou_cost: 1.0
+  giou_cost: 0.0
   curve_distance_cost: 6.0
   curve_match_point_count: 4
   num_curve_samples: 24
@@ -78,7 +78,7 @@ loss:
   ctrl_weight: 9.0
   sample_weight: 6.0
   endpoint_weight: 9.0
-  giou_weight: 0.15
+  giou_weight: 0.0
   curve_distance_weight: 7.5
   curve_distance_length_weight: 0.25
   no_object_weight: 1.0
@@ -93,7 +93,7 @@ loss:
   one_to_many_ctrl_weight: 9.0
   one_to_many_sample_weight: 6.0
   one_to_many_endpoint_weight: 9.0
-  one_to_many_giou_weight: 0.15
+  one_to_many_giou_weight: 0.0
   one_to_many_curve_distance_weight: 7.5
   topk_positive_enabled: true
   topk_positive_per_gt: 2
