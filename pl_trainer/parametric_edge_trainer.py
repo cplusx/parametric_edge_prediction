@@ -4,15 +4,15 @@ import pytorch_lightning as pl
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, MultiStepLR, SequentialLR
 
+from models import build_model
 from models.losses import compute_losses
-from models.parametric_detr import ParametricDETR
 
 
 class ParametricEdgeLightningModule(pl.LightningModule):
     def __init__(self, config: Dict) -> None:
         super().__init__()
         self.config = config
-        self.model = ParametricDETR(config)
+        self.model = build_model(config)
         self.use_channels_last = bool(config.get('trainer', {}).get('channels_last', False))
         if self.use_channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)

@@ -9,6 +9,7 @@ from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
 
 from callbacks.training_visualizer import ParametricEdgeVisualizer
+from callbacks.tracked_curve_visualizer import TrackedCurveVisualizer
 from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
 from misc_utils.config_utils import load_config
 from pl_trainer.parametric_edge_trainer import ParametricEdgeLightningModule
@@ -131,6 +132,17 @@ def main() -> None:
         max_score_curves=int(config['callbacks'].get('visualization_max_curves', 24)),
         score_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.3)),
     )
+    callbacks = [checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer]
+    tracked_curve_cfg = config.get('callbacks', {}).get('tracked_curve')
+    if tracked_curve_cfg and bool(tracked_curve_cfg.get('enabled', False)):
+        callbacks.append(
+            TrackedCurveVisualizer(
+                sample_id=str(tracked_curve_cfg['sample_id']),
+                target_idx=int(tracked_curve_cfg['target_idx']),
+                every_n_epochs=int(tracked_curve_cfg.get('every_n_epochs', 10)),
+                output_subdir=str(tracked_curve_cfg.get('output_subdir', 'tracked_curve')),
+            )
+        )
     trainer = pl.Trainer(
         default_root_dir=str(root_dir),
         max_epochs=int(config['trainer']['max_epochs']),
@@ -144,7 +156,7 @@ def main() -> None:
         limit_val_batches=config['trainer'].get('limit_val_batches', 1.0),
         overfit_batches=config['trainer'].get('overfit_batches', 0.0),
         gradient_clip_val=float(config['trainer'].get('gradient_clip_val', 0.1)),
-        callbacks=[checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer],
+        callbacks=callbacks,
         logger=loggers if loggers else False,
         deterministic=bool(config['trainer'].get('deterministic', True)),
         benchmark=bool(config['trainer'].get('benchmark', False)),

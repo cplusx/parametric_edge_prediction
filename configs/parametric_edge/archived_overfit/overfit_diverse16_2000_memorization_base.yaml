@@ -82,7 +82,6 @@ loss:
   control_cost: 1.5
   sample_cost: 2.0
   box_cost: 0.5
-  giou_cost: 1.0
   curve_distance_cost: 6.0
   num_curve_samples: 24
   ce_weight: 1.0

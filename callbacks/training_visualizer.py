@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 import torch
 
 from misc_utils.visualization_utils import render_curve_grid
+from models.curve_coordinates import curve_internal_to_external
 from models.matcher import hungarian_curve_matching
 
 
@@ -54,7 +55,7 @@ class ParametricEdgeVisualizer(pl.Callback):
         probs = predictions['pred_logits'].softmax(-1)[..., 0]
         scored_curves: List[torch.Tensor] = []
         for pred_curves, pred_keep in zip(predictions['pred_curves'], probs > self.score_threshold):
-            scored_curves.append(pred_curves[pred_keep][: self.max_score_curves])
+            scored_curves.append(curve_internal_to_external(pred_curves[pred_keep][: self.max_score_curves], pl_module.config))
 
         matched_indices = hungarian_curve_matching(
             predictions['pred_logits'],
@@ -62,15 +63,15 @@ class ParametricEdgeVisualizer(pl.Callback):
             batch['targets'],
             control_cost=float(pl_module.config['loss'].get('control_cost', 5.0)),
             sample_cost=float(pl_module.config['loss'].get('sample_cost', 2.0)),
-            giou_cost=float(pl_module.config['loss'].get('giou_cost', 1.0)),
             curve_distance_cost=float(pl_module.config['loss'].get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(pl_module.config['loss'].get('curve_match_point_count', 4)),
             num_curve_samples=int(pl_module.config['loss'].get('num_curve_samples', 16)),
             direction_invariant=bool(pl_module.config['loss'].get('direction_invariant', True)),
+            config=pl_module.config,
         )
         matched_curves: List[torch.Tensor] = []
         for batch_id, (src_idx, _) in enumerate(matched_indices):
-            matched_curves.append(predictions['pred_curves'][batch_id, src_idx])
+            matched_curves.append(curve_internal_to_external(predictions['pred_curves'][batch_id, src_idx], pl_module.config))
         return scored_curves, matched_curves
 
     def _render_batch(self, trainer, batch, scored_curves, matched_curves, split: str, token: str) -> None:

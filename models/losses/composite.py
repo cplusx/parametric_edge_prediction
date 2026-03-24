@@ -14,11 +14,7 @@ WEIGHTED_TERM_SPECS = {
             'ctrl': 'ctrl_weight',
             'sample': 'sample_weight',
             'endpoint': 'endpoint_weight',
-            'giou': 'giou_weight',
             'curve_dist': 'curve_distance_weight',
-        },
-        'term_weight_defaults': {
-            'giou': 1.0,
         },
     },
     'om': {
@@ -29,11 +25,7 @@ WEIGHTED_TERM_SPECS = {
             'ctrl': 'one_to_many_ctrl_weight',
             'sample': 'one_to_many_sample_weight',
             'endpoint': 'one_to_many_endpoint_weight',
-            'giou': 'one_to_many_giou_weight',
             'curve_dist': 'one_to_many_curve_distance_weight',
-        },
-        'term_weight_defaults': {
-            'giou': 1.0,
         },
     },
 }
@@ -71,11 +63,11 @@ class ParametricEdgeLossComputer:
             targets=targets,
             control_cost=float(loss_cfg.get('control_cost', 5.0)),
             sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-            giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
             curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
             curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
             num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
             direction_invariant=direction_invariant,
+            config=self.config,
         )
         base = self.matched_curve_loss(outputs['pred_curves'], outputs['pred_logits'], targets, indices, outputs)
         total = base['loss_total']
@@ -90,11 +82,11 @@ class ParametricEdgeLossComputer:
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
                 sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                giou_cost=float(loss_cfg.get('giou_cost', 1.0)),
                 curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
                 direction_invariant=direction_invariant,
+                config=self.config,
             )
             aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
             total = total + aux_weight * aux_losses['loss_total']

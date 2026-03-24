@@ -83,6 +83,46 @@ Effect:
 - Matching is no longer biased against reversed-but-geometrically-correct curves.
 - Optimization pressure is better aligned with the actual visual geometry of the edge set.
 
+## DAB Curve Notes
+
+Current `q_modulated` placeholder:
+
+- File:
+  - [models/dab_curve_detr.py](../models/dab_curve_detr.py)
+- Implementation:
+  - `CurveQueryModulator(mode='sine_proj')` now takes the **full** curve sine embedding, whose input dimension is
+    `(2 + num_ctrl) * d_model`, optionally scales each point block with the decoder's positional
+    transformation, then projects the full vector back to `d_model`.
+  - It intentionally does **not** yet use:
+    - `decoder_state`
+    - `reference_curves`
+    - `layer_idx`
+- Interpretation:
+  - The current version keeps the DAB-style interface in place, but the modulation branch is still a conservative placeholder rather than a task-specific curve modulation design.
+
+Boundary-endpoint finding from 8-image DAB overfit:
+
+- On the best 8-image overfit checkpoint, matched curves whose endpoints lie close to the image boundary are systematically harder:
+  - near-border endpoint L1 mean: `0.0388`
+  - non-border endpoint L1 mean: `0.0290`
+  - near-border matched score mean: `0.879`
+  - non-border matched score mean: `0.934`
+- GT endpoint coordinates do hit exact boundaries in this setup:
+  - `14` endpoint coordinates are exactly `0.0`
+  - `15` endpoint coordinates are exactly `1.0`
+- Most severe endpoint failures are not exclusively border cases, so this is a contributing factor rather than the sole bottleneck.
+
+Most likely reason:
+
+- The current DAB curve parameterization updates references through
+  - `tmp + inverse_sigmoid(reference_curves)` then `sigmoid(...)`
+- This does not make the boundary unreachable, but the local derivative becomes smaller as coordinates approach `0/1`.
+- Representative values for `d(sigmoid(z))/dz = y(1-y)`:
+  - at `y=0.99`: `9.9e-3`
+  - at `y=0.999`: `9.99e-4`
+  - at `y=0.9999`: `9.999e-5`
+- So the last stretch toward exact image boundaries is progressively harder, even though it is still optimizable in principle.
+
 ## Training Performance Opportunities
 
 Current practical bottlenecks:
