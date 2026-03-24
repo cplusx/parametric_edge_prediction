@@ -126,13 +126,13 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-2gpu-q300-eb256-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-2gpu-q300-eb64-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: 2
   strategy: ddp_find_unused_parameters_true
   precision: 32-true
-  accumulate_grad_batches: 8
+  accumulate_grad_batches: 2
   log_every_n_steps: 10
   gradient_clip_val: 0.1
   deterministic: false
@@ -157,7 +157,7 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-dab-r50-2gpu-q300-eb256-lr5e5-fp32
+    name: laion-dab-r50-2gpu-q300-eb64-lr5e5-fp32
     group: laion-dab-pretrain
     job_type: train
     tags:
@@ -167,7 +167,7 @@ logging:
       - dab
       - r50
       - q300
-      - effective-batch-256
+      - effective-batch-64
       - lr5e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-2gpu-q300-eb256-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-2gpu-q300-eb64-lr5e5-fp32/wandb
