@@ -16,34 +16,48 @@ Current default configuration now uses:
 - LAION synthetic pretraining as the current default training entrypoint
 - RGB image input from LAION image roots with precomputed Bezier graph caches
 - geometry-focused loss weights with no separate bbox regression term and no separate extent branch/loss
-- `DINOv2` vision transformer backbone
-- FPN-like multi-scale feature pyramid built from DINOv2 intermediate features
-- two-stage proposal generation from encoded memory tokens
-- grouped queries now draw from a larger proposal pool; the main group keeps the strongest proposal chunk, while auxiliary groups sample randomized non-overlapping chunks from the remaining proposal pool instead of copying the same anchors to every group
+- `DABCurveDETR` as the current main model class
+- `ResNet50` backbone with ImageNet pretrained initialization
+- standard DETR/DAB-scale transformer size:
+  - `hidden_dim: 256`
+  - `nheads: 8`
+  - `num_encoder_layers: 6`
+  - `num_decoder_layers: 6`
+  - `dim_feedforward: 2048`
+- learnable curve queries with `num_queries: 300`
+- global curve-coordinate remapping from external `[-0.1, 1.1]` to internal `[0, 1]` for matching and loss, with visualization mapped back to external coordinates
 - curve matching and geometry supervision are now direction-invariant: for each predicted/target curve pair, forward and reversed target orderings are both evaluated and the lower-cost orientation is used
-- deformable-style multi-scale decoder cross-attention
-- iterative reference-point refinement
-- denoising queries enabled
-- focal classification loss enabled
+- DAB-style iterative curve refinement
+- plain `CE` classification loss
 - cluster-oriented 4-GPU FP32 training for 200 epochs, with a 2-GPU fallback config
+- LAION effective batch size `64`
 - periodic validation visualization plus training-set visualization every 2000 iterations in the current LAION default
-- auxiliary decoder supervision computed on a strided subset of intermediate layers (`aux_layer_stride: 2`)
+- auxiliary objectives disabled by default:
+  - `aux`
+  - `DN`
+  - `one-to-many`
+  - `top-k`
+  - `distinct`
+- active geometry supervision limited to:
+  - `ctrl`
+  - `endpoint`
 
 Code:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
 - [configs/parametric_edge/bsds_formal.yaml](../configs/parametric_edge/bsds_formal.yaml)
-- [models/parametric_detr.py](../models/parametric_detr.py)
-- [models/losses.py](../models/losses.py)
+- [models/dab_curve_detr.py](../models/dab_curve_detr.py)
+- [models/losses/matched.py](../models/losses/matched.py)
 
 Why:
 
-- The earlier `ResNet + vanilla DETR decoder` stack was sufficient for synthetic overfit diagnosis, but it was missing the backbone and query/proposal machinery that modern DETR systems rely on for stable training.
+- The earlier `ParametricDETR` stack had accumulated too many overlapping mechanisms, which made it hard to isolate what was helping and what was blocking optimization.
+- The current default resets the mainline around a cleaner DAB-style curve formulation whose behavior is easier to diagnose with overfit experiments.
 
 ## TODO
 
-- Add a lean loss-stack ablation config that keeps only main matching + DN + one-to-many, and compare it against the current full stack with `topk_positive` and `distinct` enabled.
-- Revisit whether `dynamic_class_balance` is still needed when focal loss is already active, especially if score calibration remains unstable.
+- Replace the current `q_modulated` placeholder with a more faithful DAB-style structured modulation for curve queries.
+- Revisit whether `sample` / `curve_distance` should come back later, but only after re-validating them under the new DAB mainline instead of inheriting assumptions from the older model stack.
 - Consider reducing the runtime cost of matching/loss by moving the heaviest pairwise geometry kernels out of Python, starting with proposal-cost construction and Hungarian-side preprocessing.
 
 ## Direction-Invariant Curve Comparison
@@ -64,8 +78,7 @@ Where it applies:
 - Matched geometry supervision
   - `loss_ctrl`
   - `loss_endpoint`
-  - `loss_sample` / `loss_curve_dist`
-  - downstream `giou` uses the same chosen orientation
+  - `loss_sample` / `loss_curve_dist` when those terms are enabled
 
 Code:
 
@@ -122,6 +135,24 @@ Most likely reason:
   - at `y=0.999`: `9.99e-4`
   - at `y=0.9999`: `9.999e-5`
 - So the last stretch toward exact image boundaries is progressively harder, even though it is still optimizable in principle.
+
+2026-03-24 reset summary:
+
+- The main training configs were moved off the older `ParametricDETR` stack and onto `DABCurveDETR`.
+- During single-image and 8-image DAB overfit debugging:
+  - `two_stage` query construction was confirmed to be a poor diagnostic path for memorization
+  - `learned` DAB-style curve queries overfit cleanly
+  - `giou` was identified as the main geometry term that blocked clean overfit on long boundary edges
+  - removing `giou` allowed the previously problematic long edge in `183066_ann2` to reach the boundary almost perfectly
+- The current mainline therefore keeps:
+  - `CE`
+  - `ctrl`
+  - `endpoint`
+- and leaves the following disabled in the default configs:
+  - `giou`
+  - `sample`
+  - `curve_distance`
+  - grouped auxiliary objectives
 
 ## Training Performance Opportunities
 
@@ -214,13 +245,12 @@ Current implementation:
 
 Current formal model size:
 
-- `hidden_dim: 384`
-- `nheads: 12`
-- `num_encoder_layers: 4`
+- `hidden_dim: 256`
+- `nheads: 8`
+- `num_encoder_layers: 6`
 - `num_decoder_layers: 6`
-- `dim_feedforward: 1536`
-- `num_queries: 256`
-- `num_sampling_points: 8`
+- `dim_feedforward: 2048`
+- `num_queries: 300`
 
 Why:
 
@@ -237,7 +267,7 @@ Status:
 - That setting gives effective global batch size 40 and outperformed the tested `8 x 2` accumulation setting, while `12 x 2` was slower per sample.
 - Enabling `channels_last` removes the observed DDP grad-stride warning for the 1x1 convolution weights and gives a small but consistent short-run throughput improvement, so it is now part of the formal config.
 - Grouped training now uses a fixed `group_detr_num_groups: 3` during training and a single group during inference. The earlier dynamic active-group policy was removed after the query construction switched from duplicated groups to proposal-partitioned groups.
-- The current active stack removes the separate extent branch/loss and keeps geometry supervision concentrated in `ctrl`, `sample`, `endpoint`, and `curve_distance` terms plus grouped auxiliary objectives.
+- The current active stack removes the separate extent branch/loss and keeps geometry supervision concentrated in `ctrl` and `endpoint`, with grouped auxiliary objectives disabled by default.
 
 ## RGB Training Input
 

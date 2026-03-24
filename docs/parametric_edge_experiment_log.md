@@ -69,17 +69,58 @@ Current runtime design:
 - Validate and test on held-out LAION selections defined by `selection_offset`
 - Use 4 GPUs with DDP in the main cluster recipe
 - Keep both `best` and `last` checkpoints
-- Use `ddp_find_unused_parameters_true` because grouped-query training can leave some groups inactive on a step
+- Use `ddp_find_unused_parameters_true`
 - Use FP32 in the current cluster recipe
 - Record train and validation visualizations periodically
+- Current mainline model is `DABCurveDETR`, not the older `ParametricDETR`
 
 Current status:
 
 - The LAION cluster pretraining recipe is now the default config.
-- The grouped auxiliary losses are forced to remain active by using the maximum valid group count instead of random `1..K` sampling.
-- Following the 2026-03-23 single-image overfit diagnosis, the main training configs disable `giou_cost`, `giou_weight`, and `one_to_many_giou_weight`; `curve_distance` remains active.
+- The main configs now use the DAB-style curve model with:
+  - `ResNet50`
+  - `6 encoder / 6 decoder`
+  - `hidden_dim: 256`
+  - `num_queries: 300`
+- The LAION mainline now uses effective batch size `64`.
+- Auxiliary objectives are disabled by default:
+  - `aux`
+  - `DN`
+  - `one-to-many`
+  - `top-k`
+  - `distinct`
+- Following the 2026-03-24 overfit diagnosis, the main training configs disable:
+  - `giou`
+  - `sample`
+  - `curve_distance`
 - Historical BSDS training remains available as a separate path, but is no longer the default entrypoint.
 - Use `configs/parametric_edge/bsds_formal.yaml` when you explicitly want the BSDS recipe.
+
+## 2026-03-24 Summary
+
+Main conclusions from today's debugging:
+
+- The training mainline was reset from the older mixed `ParametricDETR` stack to a cleaner `DABCurveDETR` class.
+- Single-image and 8-image overfit runs were used as the primary debugging tool.
+- For overfit diagnostics:
+  - `two_stage` query construction was confirmed to be a bad fit
+  - learned DAB curve queries overfit cleanly
+- `direction_invariant` itself was not the main problem; the earlier matcher implementation was.
+- `giou` was identified as the main geometry term that prevented clean overfit, especially on long boundary edges.
+- After removing `giou`, the previously problematic long edge in `183066_ann2` could be fit to the image boundary with near-zero endpoint error.
+- The current default configs were then aligned to the stable subset that overfit supports:
+  - `CE`
+  - `ctrl`
+  - `endpoint`
+
+Main config changes made today:
+
+- switched the main configs to `dab_curve_detr`
+- moved to `ResNet50 + 6 encoder + 6 decoder`
+- set `num_queries: 300`
+- set LAION effective batch size to `64`
+- disabled `dynamic_class_balance`
+- removed `giou`, `sample`, and `curve_distance` from the active default training stack
 
 ## LAION Cluster Pretraining
 
