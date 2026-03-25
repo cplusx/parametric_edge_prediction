@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from models.position_encoding import PositionEmbeddingSine
 
@@ -156,7 +157,7 @@ class DABEncoderLayer(nn.Module):
 
 
 class DABEncoder(nn.Module):
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float, num_layers: int) -> None:
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float, num_layers: int, gradient_checkpointing: bool = False) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
             DABEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
@@ -164,12 +165,31 @@ class DABEncoder(nn.Module):
         ])
         self.query_scale = MLP(d_model, d_model, d_model, 2)
         self.norm = nn.LayerNorm(d_model)
+        self.gradient_checkpointing = gradient_checkpointing
+
+    def _should_checkpoint(self, *tensors: torch.Tensor) -> bool:
+        if not self.gradient_checkpointing or not self.training or not torch.is_grad_enabled():
+            return False
+        return any(tensor.requires_grad for tensor in tensors if isinstance(tensor, torch.Tensor))
 
     def forward(self, src: torch.Tensor, pos: torch.Tensor, key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
         output = src
         for layer in self.layers:
             pos_scale = self.query_scale(output)
-            output = layer(output, pos=pos * pos_scale, key_padding_mask=key_padding_mask)
+            scaled_pos = pos * pos_scale
+            if self._should_checkpoint(output, scaled_pos):
+                def layer_forward(current_output: torch.Tensor, current_pos: torch.Tensor) -> torch.Tensor:
+                    return layer(current_output, pos=current_pos, key_padding_mask=key_padding_mask)
+
+                output = activation_checkpoint(
+                    layer_forward,
+                    output,
+                    scaled_pos,
+                    use_reentrant=False,
+                    determinism_check='none',
+                )
+            else:
+                output = layer(output, pos=scaled_pos, key_padding_mask=key_padding_mask)
         return self.norm(output)
 
 
@@ -212,24 +232,91 @@ class CurveCrossAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.out_proj = nn.Linear(d_model, d_model)
 
+    def _build_attn_mask(
+        self,
+        batch_size: int,
+        num_queries: int,
+        num_tokens: int,
+        key_padding_mask: Optional[torch.Tensor],
+        attn_mask: Optional[torch.Tensor],
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        additive_mask: Optional[torch.Tensor] = None
+
+        if attn_mask is not None:
+            additive_mask = attn_mask.to(device=device)
+            if additive_mask.dtype == torch.bool:
+                bool_mask = additive_mask
+                additive_mask = torch.zeros(bool_mask.shape, device=device, dtype=dtype)
+                additive_mask = additive_mask.masked_fill(~bool_mask, float('-inf'))
+            else:
+                additive_mask = additive_mask.to(dtype=dtype)
+
+            if additive_mask.dim() == 2:
+                additive_mask = additive_mask.unsqueeze(0).unsqueeze(0)
+            elif additive_mask.dim() == 3:
+                additive_mask = additive_mask.unsqueeze(1)
+            elif additive_mask.dim() != 4:
+                raise ValueError('attn_mask must have shape [Q, K], [B, Q, K], or [B, H, Q, K]')
+
+            if additive_mask.shape[-2:] != (num_queries, num_tokens):
+                raise ValueError('attn_mask has incompatible query/token dimensions')
+
+            if additive_mask.shape[0] not in {1, batch_size}:
+                raise ValueError('attn_mask batch dimension must be 1 or equal to query batch size')
+
+            if additive_mask.shape[1] not in {1, self.nhead}:
+                raise ValueError('attn_mask head dimension must be 1 or equal to nhead')
+
+        if key_padding_mask is not None:
+            if key_padding_mask.shape != (batch_size, num_tokens):
+                raise ValueError('key_padding_mask has incompatible shape')
+            padding_bias = torch.zeros((batch_size, 1, 1, num_tokens), device=device, dtype=dtype)
+            padding_bias = padding_bias.masked_fill(key_padding_mask[:, None, None, :], float('-inf'))
+            additive_mask = padding_bias if additive_mask is None else additive_mask + padding_bias
+
+        return additive_mask
+
     def forward(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
         key_padding_mask: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+        use_sdpa: bool = True,
     ) -> torch.Tensor:
         batch_size, num_queries, _ = query.shape
         num_tokens = key.shape[1]
         q = query.view(batch_size, num_queries, self.nhead, self.head_dim * 2).transpose(1, 2)
         k = key.view(batch_size, num_tokens, self.nhead, self.head_dim * 2).transpose(1, 2)
         v = value.view(batch_size, num_tokens, self.nhead, self.head_dim).transpose(1, 2)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(float(self.head_dim * 2))
-        if key_padding_mask is not None:
-            scores = scores.masked_fill(key_padding_mask[:, None, None, :], float('-inf'))
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-        output = torch.matmul(attn, v)
+        merged_mask = self._build_attn_mask(
+            batch_size,
+            num_queries,
+            num_tokens,
+            key_padding_mask,
+            attn_mask,
+            device=query.device,
+            dtype=q.dtype,
+        )
+        if use_sdpa:
+            output = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=merged_mask,
+                dropout_p=self.dropout.p if self.training else 0.0,
+            )
+        else:
+            scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(float(self.head_dim * 2))
+            if merged_mask is not None:
+                scores = scores + merged_mask
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.dropout(attn)
+            output = torch.matmul(attn, v)
         output = output.transpose(1, 2).reshape(batch_size, num_queries, self.d_model)
         return self.out_proj(output)
 
@@ -270,6 +357,7 @@ class DABCurveDecoderLayer(nn.Module):
         query_pos: torch.Tensor,
         query_modulated: torch.Tensor,
         is_first: bool,
+        force_legacy_cross_attn: bool = False,
     ) -> torch.Tensor:
         q_content = self.sa_qcontent_proj(tgt)
         q_pos = self.sa_qpos_proj(query_pos)
@@ -291,7 +379,13 @@ class DABCurveDecoderLayer(nn.Module):
             q_base = q_content
         q = torch.cat([q_base, query_modulated], dim=-1)
         k = torch.cat([k_content, k_pos], dim=-1)
-        tgt2 = self.cross_attn(q, k, v, key_padding_mask=memory_key_padding_mask)
+        tgt2 = self.cross_attn(
+            q,
+            k,
+            v,
+            key_padding_mask=memory_key_padding_mask,
+            use_sdpa=not force_legacy_cross_attn,
+        )
         tgt = self.norm2(tgt + self.dropout(tgt2))
 
         tgt2 = self.linear2(self.dropout(F.relu(self.linear1(tgt))))
@@ -312,6 +406,7 @@ class DABCurveDecoder(nn.Module):
         query_scale_type: str,
         curve_embed_diff_each_layer: bool,
         query_modulator_mode: str,
+        gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.layers = nn.ModuleList([
@@ -344,6 +439,12 @@ class DABCurveDecoder(nn.Module):
             self.curve_embed = MLP(d_model, d_model, curve_dim, 3)
         self.curve_embed_diff_each_layer = curve_embed_diff_each_layer
         self.norm = nn.LayerNorm(d_model)
+        self.gradient_checkpointing = gradient_checkpointing
+
+    def _should_checkpoint(self, *tensors: torch.Tensor) -> bool:
+        if not self.gradient_checkpointing or not self.training or not torch.is_grad_enabled():
+            return False
+        return any(tensor.requires_grad for tensor in tensors if isinstance(tensor, torch.Tensor))
 
     def _curve_embed_for_layer(self, layer_idx: int, hidden: torch.Tensor) -> torch.Tensor:
         if self.curve_embed_diff_each_layer:
@@ -380,6 +481,7 @@ class DABCurveDecoder(nn.Module):
                 pos_transformation=pos_transformation,
                 layer_idx=layer_idx,
             )
+            is_first = layer_idx == 0
             output = layer(
                 tgt=output,
                 memory=memory,
@@ -387,7 +489,8 @@ class DABCurveDecoder(nn.Module):
                 pos=pos,
                 query_pos=query_pos,
                 query_modulated=query_modulated,
-                is_first=(layer_idx == 0),
+                is_first=is_first,
+                force_legacy_cross_attn=False,
             )
             tmp = self._curve_embed_for_layer(layer_idx, output)
             tmp = tmp + inverse_sigmoid(reference_curves)
@@ -421,6 +524,7 @@ class DABCurveDETR(nn.Module):
         self.query_scale_type = str(model_cfg.get('dab_query_scale_type', 'cond_elewise'))
         self.curve_embed_diff_each_layer = bool(model_cfg.get('dab_curve_embed_diff_each_layer', False))
         self.query_modulator_mode = str(model_cfg.get('dab_query_modulation_mode', 'sine_proj'))
+        self.gradient_checkpointing = bool(model_cfg.get('gradient_checkpointing', False))
         self.aux_weight = float(config['loss'].get('aux_weight', 0.0))
         self.aux_layer_stride = max(1, int(config['loss'].get('aux_layer_stride', 1)))
 
@@ -432,6 +536,7 @@ class DABCurveDETR(nn.Module):
             dim_feedforward=self.ffn_dim,
             dropout=self.dropout,
             num_layers=self.num_encoder_layers,
+            gradient_checkpointing=self.gradient_checkpointing,
         )
         self.decoder = DABCurveDecoder(
             d_model=self.hidden_dim,
@@ -444,6 +549,7 @@ class DABCurveDETR(nn.Module):
             query_scale_type=self.query_scale_type,
             curve_embed_diff_each_layer=self.curve_embed_diff_each_layer,
             query_modulator_mode=self.query_modulator_mode,
+            gradient_checkpointing=self.gradient_checkpointing,
         )
 
         self.class_embed = nn.Linear(self.hidden_dim, 2)

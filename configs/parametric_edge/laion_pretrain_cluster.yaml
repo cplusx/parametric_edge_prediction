@@ -75,6 +75,7 @@ model:
   dab_query_scale_type: cond_elewise
   dab_curve_embed_diff_each_layer: false
   dab_query_modulation_mode: sine_proj
+  gradient_checkpointing: true
   curve_coord_min: -0.1
   curve_coord_max: 1.1
   object_bias: -2.0
@@ -82,7 +83,7 @@ model:
   dn_num_groups: 0
 
 loss:
-  class_loss_type: ce
+  class_loss_type: focal
   control_cost: 5.0
   sample_cost: 2.0
   curve_match_point_count: 4
