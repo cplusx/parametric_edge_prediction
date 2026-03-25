@@ -36,7 +36,7 @@ class FrozenBatchNorm2d(nn.Module):
         self.register_buffer('bias', torch.zeros(num_features))
         self.register_buffer('running_mean', torch.zeros(num_features))
         self.register_buffer('running_var', torch.ones(num_features))
-        self.register_buffer('num_batches_tracked', torch.tensor(0, dtype=torch.long), persistent=False)
+        self.register_buffer('num_batches_tracked', torch.tensor(0, dtype=torch.long))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         eps = 1e-5
