@@ -4,8 +4,8 @@ data:
   include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
-  batch_size: 16
-  val_batch_size: 16
+  batch_size: 4
+  val_batch_size: 4
   num_workers: 16
   pin_memory: true
   persistent_workers: true
@@ -132,7 +132,7 @@ trainer:
   devices: 2
   strategy: ddp_find_unused_parameters_true
   precision: 32-true
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 8
   log_every_n_steps: 10
   gradient_clip_val: 0.1
   deterministic: false
