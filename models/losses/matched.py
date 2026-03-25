@@ -166,7 +166,7 @@ class MatchedCurveLoss(BaseLossComponent):
             + float(weight_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
             + float(weight_cfg.get('sample_weight', 0.0)) * loss_curve_chamfer
             + float(weight_cfg.get('endpoint_weight', 2.0)) * loss_endpoint
-            + float(weight_cfg.get('curve_distance_weight', 2.0)) * loss_curve_dist
+            + float(weight_cfg.get('curve_distance_weight', 0.0)) * loss_curve_dist
         )
         return {
             'loss_total': total,

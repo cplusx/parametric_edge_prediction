@@ -34,14 +34,19 @@ class DenoisingLoss(BaseLossComponent):
         labels = dn_meta['labels'].to(device)
         mask = dn_meta['mask'].to(device)
         gt_curves = curve_external_to_internal(dn_meta['curves'].to(device), self.config)
-        if bool(self.config['loss'].get('dynamic_class_balance', True)):
-            ce_per_query = F.cross_entropy(logits.transpose(1, 2), labels, reduction='none')
-            class_weights, normalizer, active_mask = balanced_class_weights(labels, positive_class=0)
-            per_sample = (ce_per_query * class_weights).sum(dim=1) / normalizer
-            loss_ce = per_sample[active_mask].mean() if bool(active_mask.any()) else logits.sum() * 0.0
+        if mask.any():
+            valid_logits = logits[mask]
+            valid_labels = labels[mask]
+            if bool(self.config['loss'].get('dynamic_class_balance', True)):
+                ce_per_query = F.cross_entropy(valid_logits, valid_labels, reduction='none')
+                class_weights, normalizer, active_mask = balanced_class_weights(valid_labels.unsqueeze(0), positive_class=0)
+                per_sample = (ce_per_query.unsqueeze(0) * class_weights).sum(dim=1) / normalizer
+                loss_ce = per_sample[active_mask].mean() if bool(active_mask.any()) else logits.sum() * 0.0
+            else:
+                class_weight = torch.tensor([1.0, float(self.config['loss'].get('no_object_weight', 0.2))], device=device)
+                loss_ce = F.cross_entropy(valid_logits, valid_labels, weight=class_weight)
         else:
-            class_weight = torch.tensor([1.0, float(self.config['loss'].get('no_object_weight', 0.2))], device=device)
-            loss_ce = F.cross_entropy(logits.transpose(1, 2), labels, weight=class_weight)
+            loss_ce = logits.sum() * 0.0
         if mask.any():
             pred_valid = curves[mask]
             target_valid = gt_curves[mask]
@@ -99,7 +104,7 @@ class DistinctQueryLoss(BaseLossComponent):
                         tgt_curves=tgt_curves,
                         control_cost=float(loss_cfg.get('control_cost', 5.0)),
                         sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                        curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                        curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
                         curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                         num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
                         direction_invariant=direction_invariant,
@@ -171,7 +176,7 @@ class OneToManyLoss(BaseLossComponent):
                     tgt_curves=tgt_curves,
                     control_cost=float(loss_cfg.get('control_cost', 5.0)),
                     sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                    curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                    curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
                     curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                     num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
                     direction_invariant=direction_invariant,
@@ -232,7 +237,7 @@ class OneToManyLoss(BaseLossComponent):
             'ctrl_weight': float(loss_cfg.get('one_to_many_ctrl_weight', loss_cfg.get('ctrl_weight', 5.0))),
             'sample_weight': float(loss_cfg.get('one_to_many_sample_weight', loss_cfg.get('sample_weight', 0.0))),
             'endpoint_weight': float(loss_cfg.get('one_to_many_endpoint_weight', loss_cfg.get('endpoint_weight', 2.0))),
-            'curve_distance_weight': float(loss_cfg.get('one_to_many_curve_distance_weight', loss_cfg.get('curve_distance_weight', 2.0))),
+            'curve_distance_weight': float(loss_cfg.get('one_to_many_curve_distance_weight', loss_cfg.get('curve_distance_weight', 0.0))),
         }
         group_summaries = []
         topk_summaries = []
@@ -245,7 +250,7 @@ class OneToManyLoss(BaseLossComponent):
                 targets=targets,
                 control_cost=float(loss_cfg.get('control_cost', 5.0)),
                 sample_cost=float(loss_cfg.get('sample_cost', 2.0)),
-                curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 1.0)),
+                curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
                 curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
                 num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
                 direction_invariant=direction_invariant,

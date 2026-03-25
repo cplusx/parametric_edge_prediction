@@ -59,8 +59,6 @@ model:
   curve_coord_max: 1.1
   object_bias: -2.0
   no_object_bias: 2.0
-  dn_num_groups: 0
-
 loss:
   class_loss_type: ce
   control_cost: 5.0
@@ -69,28 +67,9 @@ loss:
   num_curve_samples: 16
   ce_weight: 1.0
   ctrl_weight: 5.0
-  sample_weight: 0.0
   endpoint_weight: 2.0
   no_object_weight: 0.2
   dynamic_class_balance: false
-  aux_weight: 0.0
-  aux_layer_stride: 1
-  dn_weight: 0.0
-  dn_curve_weight: 0.0
-  group_detr_num_groups: 1
-  one_to_many_weight: 0.0
-  one_to_many_ce_weight: 1.0
-  one_to_many_ctrl_weight: 5.0
-  one_to_many_sample_weight: 0.0
-  one_to_many_endpoint_weight: 2.0
-  topk_positive_enabled: false
-  topk_positive_per_gt: 2
-  topk_positive_layer_k: [2, 2, 2, 2, 2]
-  topk_positive_weight: 0.0
-  topk_positive_tau: 1.5
-  distinct_weight: 0.0
-  distinct_topk: 32
-  distinct_spatial_sigma: 0.12
 
 optimizer:
   lr: 0.00002

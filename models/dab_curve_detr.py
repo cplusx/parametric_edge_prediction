@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import torchvision
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
+from models.curve_coordinates import curve_external_to_internal
 from models.position_encoding import PositionEmbeddingSine
 
 
@@ -356,6 +357,7 @@ class DABCurveDecoderLayer(nn.Module):
         pos: torch.Tensor,
         query_pos: torch.Tensor,
         query_modulated: torch.Tensor,
+        self_attn_mask: Optional[torch.Tensor],
         is_first: bool,
         force_legacy_cross_attn: bool = False,
     ) -> torch.Tensor:
@@ -366,7 +368,7 @@ class DABCurveDecoderLayer(nn.Module):
         v = self.sa_v_proj(tgt)
         q = q_content + q_pos
         k = k_content + k_pos
-        tgt2 = self.self_attn(q, k, value=v, need_weights=False)[0]
+        tgt2 = self.self_attn(q, k, value=v, attn_mask=self_attn_mask, need_weights=False)[0]
         tgt = self.norm1(tgt + self.dropout(tgt2))
 
         q_content = self.ca_qcontent_proj(tgt)
@@ -458,6 +460,7 @@ class DABCurveDecoder(nn.Module):
         memory_key_padding_mask: Optional[torch.Tensor],
         pos: torch.Tensor,
         ref_curves_unsigmoid: torch.Tensor,
+        self_attn_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         output = tgt
         reference_curves = ref_curves_unsigmoid.sigmoid()
@@ -489,6 +492,7 @@ class DABCurveDecoder(nn.Module):
                 pos=pos,
                 query_pos=query_pos,
                 query_modulated=query_modulated,
+                self_attn_mask=self_attn_mask,
                 is_first=is_first,
                 force_legacy_cross_attn=False,
             )
@@ -525,6 +529,9 @@ class DABCurveDETR(nn.Module):
         self.curve_embed_diff_each_layer = bool(model_cfg.get('dab_curve_embed_diff_each_layer', False))
         self.query_modulator_mode = str(model_cfg.get('dab_query_modulation_mode', 'sine_proj'))
         self.gradient_checkpointing = bool(model_cfg.get('gradient_checkpointing', False))
+        self.num_dn_groups = int(model_cfg.get('dn_num_groups', 0))
+        self.dn_noise_scale = float(model_cfg.get('dn_noise_scale', 0.04))
+        self.dn_use_label_embed = bool(model_cfg.get('dn_use_label_embed', False))
         self.aux_weight = float(config['loss'].get('aux_weight', 0.0))
         self.aux_layer_stride = max(1, int(config['loss'].get('aux_layer_stride', 1)))
 
@@ -555,6 +562,8 @@ class DABCurveDETR(nn.Module):
         self.class_embed = nn.Linear(self.hidden_dim, 2)
         self.query_content_embed = nn.Embedding(self.num_queries, self.hidden_dim)
         self.refpoint_embed = nn.Embedding(self.num_queries, self.curve_dim)
+        self.dn_content_embed = nn.Embedding(1, self.hidden_dim)
+        self.dn_label_embed = nn.Embedding(2, self.hidden_dim) if self.dn_use_label_embed else None
 
         nn.init.constant_(self.class_embed.bias[0], self.object_bias)
         nn.init.constant_(self.class_embed.bias[1], self.no_object_bias)
@@ -579,18 +588,102 @@ class DABCurveDETR(nn.Module):
         aux_layers = max(0, self.num_decoder_layers - 1)
         return list(range(0, aux_layers, self.aux_layer_stride))
 
-    def _set_aux_outputs(self, outputs_class: torch.Tensor, outputs_curves: torch.Tensor) -> List[Dict[str, torch.Tensor]]:
+    def _set_aux_outputs(self, outputs_class: torch.Tensor, outputs_curves: torch.Tensor, dn_count: int) -> List[Dict[str, torch.Tensor]]:
         aux_indices = self._selected_aux_layer_indices()
         return [
             {
-                'pred_logits': outputs_class[layer_idx],
-                'pred_curves': outputs_curves[layer_idx].reshape(outputs_curves.shape[1], outputs_curves.shape[2], self.num_control_points, 2),
+                'pred_logits': outputs_class[layer_idx][:, dn_count:],
+                'pred_curves': outputs_curves[layer_idx][:, dn_count:].reshape(outputs_curves.shape[1], outputs_curves.shape[2] - dn_count, self.num_control_points, 2),
             }
             for layer_idx in aux_indices
         ]
 
+    def _build_dn_query_content(self, dn_labels: torch.Tensor) -> torch.Tensor:
+        base = self.dn_content_embed.weight[0].view(1, 1, -1).expand(dn_labels.shape[0], dn_labels.shape[1], -1)
+        if self.dn_label_embed is None:
+            return base
+        return base + self.dn_label_embed(dn_labels)
+
+    def _build_dn_queries(
+        self,
+        targets: Optional[List[dict]],
+        device: torch.device,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
+        if (not self.training) or targets is None or self.num_dn_groups <= 0:
+            return None, None, None
+        batch_size = len(targets)
+        max_targets = max((target['curves'].shape[0] for target in targets), default=0)
+        if max_targets <= 0:
+            return None, None, None
+
+        single_pad = max_targets
+        pad_size = single_pad * self.num_dn_groups
+        eps = 1e-4
+
+        dn_ref_curves = torch.full(
+            (batch_size, pad_size, self.num_control_points, 2),
+            0.5,
+            dtype=torch.float32,
+            device=device,
+        )
+        dn_target_curves = torch.zeros(
+            (batch_size, pad_size, self.num_control_points, 2),
+            dtype=torch.float32,
+            device=device,
+        )
+        dn_mask = torch.zeros((batch_size, pad_size), dtype=torch.bool, device=device)
+        dn_labels = torch.ones((batch_size, pad_size), dtype=torch.long, device=device)
+
+        for batch_idx, target in enumerate(targets):
+            target_curves_ext = target['curves'].to(device)
+            if target_curves_ext.numel() == 0:
+                continue
+            target_curves_int = curve_external_to_internal(target_curves_ext, self.config)
+            count = target_curves_int.shape[0]
+            for group_idx in range(self.num_dn_groups):
+                start = group_idx * single_pad
+                end = start + count
+                noisy = target_curves_int + torch.randn_like(target_curves_int) * self.dn_noise_scale
+                noisy = noisy.clamp(eps, 1.0 - eps)
+                dn_ref_curves[batch_idx, start:end] = noisy
+                dn_target_curves[batch_idx, start:end] = target_curves_ext
+                dn_mask[batch_idx, start:end] = True
+                dn_labels[batch_idx, start:end] = 0
+
+        dn_content = self._build_dn_query_content(dn_labels)
+        dn_meta = {
+            'mask': dn_mask,
+            'labels': dn_labels,
+            'curves': dn_target_curves,
+            'count': pad_size,
+            'pad_size': pad_size,
+            'single_pad': single_pad,
+            'num_dn_groups': self.num_dn_groups,
+        }
+        dn_ref_unsigmoid = inverse_sigmoid(dn_ref_curves.reshape(batch_size, pad_size, self.curve_dim))
+        return dn_content, dn_ref_unsigmoid, dn_meta
+
+    def _build_dn_attention_mask(self, dn_meta: Optional[Dict[str, torch.Tensor]], device: torch.device) -> Optional[torch.Tensor]:
+        if dn_meta is None or int(dn_meta.get('pad_size', 0)) <= 0:
+            return None
+        pad_size = int(dn_meta['pad_size'])
+        single_pad = int(dn_meta['single_pad'])
+        num_dn_groups = int(dn_meta['num_dn_groups'])
+        total_queries = pad_size + self.num_queries
+        attn_mask = torch.zeros((total_queries, total_queries), dtype=torch.bool, device=device)
+        # Matching queries cannot attend to denoising queries.
+        attn_mask[pad_size:, :pad_size] = True
+        # Different denoising groups cannot see each other.
+        for group_idx in range(num_dn_groups):
+            start = group_idx * single_pad
+            end = start + single_pad
+            if start > 0:
+                attn_mask[start:end, :start] = True
+            if end < pad_size:
+                attn_mask[start:end, end:pad_size] = True
+        return attn_mask
+
     def forward(self, images: torch.Tensor, targets=None) -> Dict[str, torch.Tensor]:
-        del targets
         src, mask, pos = self.backbone(images)
         src = self.input_proj(src)
         pos = pos.to(src.dtype)
@@ -601,8 +694,17 @@ class DABCurveDETR(nn.Module):
         mask_flat = mask.flatten(1)
 
         memory = self.encoder(src_flat, pos=pos_flat, key_padding_mask=mask_flat)
-        query_content = self.query_content_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
-        ref_curves_unsigmoid = self.refpoint_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        matching_query_content = self.query_content_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        matching_ref_curves_unsigmoid = self.refpoint_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        dn_query_content, dn_ref_curves_unsigmoid, dn_meta = self._build_dn_queries(targets, images.device)
+        if dn_query_content is not None and dn_ref_curves_unsigmoid is not None:
+            query_content = torch.cat([dn_query_content, matching_query_content], dim=1)
+            ref_curves_unsigmoid = torch.cat([dn_ref_curves_unsigmoid, matching_ref_curves_unsigmoid], dim=1)
+        else:
+            query_content = matching_query_content
+            ref_curves_unsigmoid = matching_ref_curves_unsigmoid
+            dn_meta = None
+        self_attn_mask = self._build_dn_attention_mask(dn_meta, images.device)
 
         hs, references = self.decoder(
             tgt=query_content,
@@ -610,6 +712,7 @@ class DABCurveDETR(nn.Module):
             memory_key_padding_mask=mask_flat,
             pos=pos_flat,
             ref_curves_unsigmoid=ref_curves_unsigmoid,
+            self_attn_mask=self_attn_mask,
         )
         outputs_class = self.class_embed(hs)
 
@@ -620,13 +723,18 @@ class DABCurveDETR(nn.Module):
             tmp = tmp + reference_before_sigmoid[layer_idx]
             outputs_curves.append(tmp.sigmoid())
         outputs_curves = torch.stack(outputs_curves, dim=0)
+        dn_count = int(dn_meta['count']) if dn_meta is not None else 0
 
         out = {
-            'pred_logits': outputs_class[-1],
-            'pred_curves': outputs_curves[-1].reshape(batch_size, self.num_queries, self.num_control_points, 2),
+            'pred_logits': outputs_class[-1][:, dn_count:],
+            'pred_curves': outputs_curves[-1][:, dn_count:].reshape(batch_size, self.num_queries, self.num_control_points, 2),
             'pred_group_count': 1,
         }
-        aux_outputs = self._set_aux_outputs(outputs_class, outputs_curves)
+        if dn_count > 0:
+            out['dn_pred_logits'] = outputs_class[-1][:, :dn_count]
+            out['dn_pred_curves'] = outputs_curves[-1][:, :dn_count].reshape(batch_size, dn_count, self.num_control_points, 2)
+            out['dn_meta'] = dn_meta
+        aux_outputs = self._set_aux_outputs(outputs_class, outputs_curves, dn_count=dn_count)
         if aux_outputs:
             out['aux_outputs'] = aux_outputs
         return out
