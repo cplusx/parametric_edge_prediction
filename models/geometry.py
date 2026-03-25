@@ -93,6 +93,21 @@ def pairwise_sample_l1_forward_reverse_cost(
     return forward, reverse
 
 
+def pairwise_endpoint_l1_forward_reverse_cost(
+    pred_curves: torch.Tensor,
+    tgt_curves: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
+        zero = pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
+        return zero, zero
+    pred_endpoints = pred_curves[:, [0, -1]].reshape(pred_curves.shape[0], -1)
+    tgt_endpoints = tgt_curves[:, [0, -1]].reshape(tgt_curves.shape[0], -1)
+    tgt_rev_endpoints = reverse_curve_points(tgt_curves)[:, [0, -1]].reshape(tgt_curves.shape[0], -1)
+    forward = torch.cdist(pred_endpoints, tgt_endpoints, p=1)
+    reverse = torch.cdist(pred_endpoints, tgt_rev_endpoints, p=1)
+    return forward, reverse
+
+
 def aligned_curve_l1(
     pred_curves: torch.Tensor,
     tgt_curves: torch.Tensor,

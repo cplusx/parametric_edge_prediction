@@ -60,14 +60,12 @@ model:
   object_bias: -2.0
   no_object_bias: 2.0
 loss:
-  class_loss_type: ce
+  class_loss_type: focal
   control_cost: 5.0
-  sample_cost: 2.0
-  curve_match_point_count: 4
-  num_curve_samples: 16
+  endpoint_cost: 5.0
   ce_weight: 1.0
   ctrl_weight: 5.0
-  endpoint_weight: 2.0
+  endpoint_weight: 5.0
   no_object_weight: 0.2
   dynamic_class_balance: false
 
@@ -90,7 +88,7 @@ trainer:
   accelerator: gpu
   devices: 2
   strategy: ddp_find_unused_parameters_true
-  precision: 16-mixed
+  precision: 32-true
   accumulate_grad_batches: 2
   channels_last: true
   log_every_n_steps: 10
