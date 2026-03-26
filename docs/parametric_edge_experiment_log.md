@@ -56,8 +56,7 @@ These are no longer part of the main code path, main configs, or current trainin
 Primary configs:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
-- [configs/parametric_edge/laion_pretrain_cluster.yaml](../configs/parametric_edge/laion_pretrain_cluster.yaml)
-- [configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml](../configs/parametric_edge/laion_pretrain_cluster_2gpu.yaml)
+- [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml)
 - [configs/parametric_edge/bsds_formal.yaml](../configs/parametric_edge/bsds_formal.yaml)
 
 Current mainline design:
@@ -87,6 +86,13 @@ Current mainline does **not** use:
 - `curve_distance` loss
 
 DN support still exists inside `DABCurveDETR` as an optional training-time feature, but it is not part of the stripped mainline path unless explicitly enabled again in config.
+
+LAION pretrain now uses a unified CE + DN + aux config:
+
+- [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml)
+- `trainer.devices` is resolved at runtime from the visible GPU count
+- `trainer.accumulate_grad_batches` is inferred from `trainer.effective_batch_size`, current GPU count, and `data.batch_size`
+- output dir and wandb name auto-format with `{devices}` so the same config can run on 2 GPU or 4 GPU nodes
 
 ## Current Optimizer / Runtime Defaults
 

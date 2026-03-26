@@ -620,6 +620,11 @@ class DABCurveDETR(nn.Module):
 
     def _sample_dn_noisy_curves(self, target_curves_int: torch.Tensor, *, negative: bool) -> torch.Tensor:
         eps = 1e-4
+        # Keep the original DN behavior for non-CDN training so existing
+        # denoising configurations remain comparable to earlier runs.
+        if not self.dn_use_cdn:
+            noisy = target_curves_int + torch.randn_like(target_curves_int) * self.dn_noise_scale
+            return noisy.clamp(eps, 1.0 - eps)
         rand_sign = torch.where(
             torch.rand_like(target_curves_int) < 0.5,
             -torch.ones_like(target_curves_int),

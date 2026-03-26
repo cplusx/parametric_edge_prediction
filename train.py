@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 import pytorch_lightning as pl
 import torch
@@ -73,7 +73,11 @@ def build_loggers(config, root_dir: Path) -> List:
 
 def resolve_trainer_strategy(config) -> str:
     trainer_cfg = config.get('trainer', {})
-    return trainer_cfg.get('strategy', 'auto')
+    strategy = trainer_cfg.get('strategy', 'auto')
+    devices = trainer_cfg.get('devices', 1)
+    if int(devices) == 1 and str(strategy).startswith('deepspeed'):
+        return 'auto'
+    return strategy
 
 
 def resolve_limit_train_batches(config):
@@ -85,6 +89,65 @@ def resolve_limit_train_batches(config):
     return effective_steps * accumulate
 
 
+def _format_runtime_values(value: Any, context: Dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        try:
+            return value.format(**context)
+        except (KeyError, IndexError, ValueError):
+            return value
+    if isinstance(value, list):
+        return [_format_runtime_values(item, context) for item in value]
+    if isinstance(value, dict):
+        return {key: _format_runtime_values(item, context) for key, item in value.items()}
+    return value
+
+
+def resolve_runtime_scaling(config: Dict[str, Any]) -> Dict[str, Any]:
+    trainer_cfg = config.setdefault('trainer', {})
+    data_cfg = config.get('data', {})
+
+    accelerator = str(trainer_cfg.get('accelerator', 'auto'))
+    devices = trainer_cfg.get('devices', 'auto')
+    if isinstance(devices, str) and devices.lower() == 'auto':
+        if accelerator == 'gpu' or (accelerator == 'auto' and torch.cuda.is_available()):
+            devices = max(1, torch.cuda.device_count())
+        else:
+            devices = 1
+        trainer_cfg['devices'] = devices
+
+    if isinstance(devices, str):
+        devices = int(devices)
+        trainer_cfg['devices'] = devices
+
+    effective_batch_size = trainer_cfg.get('effective_batch_size', trainer_cfg.get('global_batch_size'))
+    accumulate = trainer_cfg.get('accumulate_grad_batches', 1)
+    if isinstance(accumulate, str) and accumulate.lower() == 'auto':
+        if effective_batch_size is None:
+            raise ValueError('trainer.effective_batch_size is required when accumulate_grad_batches is auto')
+        per_device_batch = int(data_cfg.get('batch_size', 1))
+        denom = per_device_batch * int(devices)
+        if denom <= 0:
+            raise ValueError(f'Invalid per-device batch/device count for auto scaling: batch={per_device_batch}, devices={devices}')
+        if int(effective_batch_size) % denom != 0:
+            raise ValueError(
+                f'Effective batch size {effective_batch_size} is not divisible by per-device batch {per_device_batch} * devices {devices}'
+            )
+        accumulate = int(effective_batch_size) // denom
+        trainer_cfg['accumulate_grad_batches'] = accumulate
+
+    global_batch_size = int(devices) * int(data_cfg.get('batch_size', 1)) * int(trainer_cfg.get('accumulate_grad_batches', 1))
+    context = {
+        'devices': int(devices),
+        'world_size': int(devices),
+        'num_devices': int(devices),
+        'batch_size': int(data_cfg.get('batch_size', 1)),
+        'accumulate_grad_batches': int(trainer_cfg.get('accumulate_grad_batches', 1)),
+        'effective_batch_size': effective_batch_size,
+        'global_batch_size': global_batch_size,
+    }
+    return _format_runtime_values(config, context)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
@@ -93,6 +156,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config, args.override_config)
+    config = resolve_runtime_scaling(config)
     seed = config.get('trainer', {}).get('seed')
     if seed is not None:
         pl.seed_everything(int(seed), workers=True)

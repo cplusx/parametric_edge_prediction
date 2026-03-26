@@ -117,7 +117,8 @@ class ParametricEdgeVisualizer(pl.Callback):
             return
         if self.val_every_n_epochs <= 0:
             return
-        if trainer.current_epoch % self.val_every_n_epochs != 0:
+        completed_epoch = trainer.current_epoch + 1
+        if completed_epoch % self.val_every_n_epochs != 0:
             return
         scored_curves, matched_curves = self._predict_curves(pl_module, batch)
-        self._render_batch(trainer, batch, scored_curves, matched_curves, 'val', f'epoch_{trainer.current_epoch:03d}')
+        self._render_batch(trainer, batch, scored_curves, matched_curves, 'val', f'epoch_{completed_epoch:03d}')
