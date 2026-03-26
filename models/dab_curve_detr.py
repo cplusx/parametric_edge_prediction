@@ -408,6 +408,7 @@ class DABCurveDecoder(nn.Module):
         query_scale_type: str,
         curve_embed_diff_each_layer: bool,
         query_modulator_mode: str,
+        force_legacy_cross_attn: bool = False,
         gradient_checkpointing: bool = False,
     ) -> None:
         super().__init__()
@@ -441,6 +442,7 @@ class DABCurveDecoder(nn.Module):
             self.curve_embed = MLP(d_model, d_model, curve_dim, 3)
         self.curve_embed_diff_each_layer = curve_embed_diff_each_layer
         self.norm = nn.LayerNorm(d_model)
+        self.force_legacy_cross_attn = force_legacy_cross_attn
         self.gradient_checkpointing = gradient_checkpointing
 
     def _should_checkpoint(self, *tensors: torch.Tensor) -> bool:
@@ -494,7 +496,7 @@ class DABCurveDecoder(nn.Module):
                 query_modulated=query_modulated,
                 self_attn_mask=self_attn_mask,
                 is_first=is_first,
-                force_legacy_cross_attn=False,
+                force_legacy_cross_attn=self.force_legacy_cross_attn,
             )
             tmp = self._curve_embed_for_layer(layer_idx, output)
             tmp = tmp + inverse_sigmoid(reference_curves)
@@ -528,10 +530,15 @@ class DABCurveDETR(nn.Module):
         self.query_scale_type = str(model_cfg.get('dab_query_scale_type', 'cond_elewise'))
         self.curve_embed_diff_each_layer = bool(model_cfg.get('dab_curve_embed_diff_each_layer', False))
         self.query_modulator_mode = str(model_cfg.get('dab_query_modulation_mode', 'sine_proj'))
+        self.force_legacy_cross_attn = bool(model_cfg.get('dab_force_legacy_cross_attn', False))
         self.gradient_checkpointing = bool(model_cfg.get('gradient_checkpointing', False))
+        self.dn_enabled = bool(model_cfg.get('dn_enabled', False))
         self.num_dn_groups = int(model_cfg.get('dn_num_groups', 0))
+        self.dn_use_cdn = bool(model_cfg.get('dn_use_cdn', False))
         self.dn_noise_scale = float(model_cfg.get('dn_noise_scale', 0.04))
+        self.dn_negative_noise_bias = float(model_cfg.get('dn_negative_noise_bias', 1.0))
         self.dn_use_label_embed = bool(model_cfg.get('dn_use_label_embed', False))
+        self.dn_label_noise_ratio = float(model_cfg.get('dn_label_noise_ratio', 0.0))
         self.aux_weight = float(config['loss'].get('aux_weight', 0.0))
         self.aux_layer_stride = max(1, int(config['loss'].get('aux_layer_stride', 1)))
 
@@ -556,6 +563,7 @@ class DABCurveDETR(nn.Module):
             query_scale_type=self.query_scale_type,
             curve_embed_diff_each_layer=self.curve_embed_diff_each_layer,
             query_modulator_mode=self.query_modulator_mode,
+            force_legacy_cross_attn=self.force_legacy_cross_attn,
             gradient_checkpointing=self.gradient_checkpointing,
         )
 
@@ -604,20 +612,48 @@ class DABCurveDETR(nn.Module):
             return base
         return base + self.dn_label_embed(dn_labels)
 
+    def _curve_noise_extent(self, target_curves_int: torch.Tensor) -> torch.Tensor:
+        curve_min = target_curves_int.amin(dim=1, keepdim=True)
+        curve_max = target_curves_int.amax(dim=1, keepdim=True)
+        curve_extent = (curve_max - curve_min).clamp_min(0.05)
+        return curve_extent.expand(-1, self.num_control_points, -1)
+
+    def _sample_dn_noisy_curves(self, target_curves_int: torch.Tensor, *, negative: bool) -> torch.Tensor:
+        eps = 1e-4
+        rand_sign = torch.where(
+            torch.rand_like(target_curves_int) < 0.5,
+            -torch.ones_like(target_curves_int),
+            torch.ones_like(target_curves_int),
+        )
+        rand_part = torch.rand_like(target_curves_int)
+        if negative:
+            rand_part = rand_part + self.dn_negative_noise_bias
+        offset = rand_sign * rand_part * self._curve_noise_extent(target_curves_int) * self.dn_noise_scale
+        return (target_curves_int + offset).clamp(eps, 1.0 - eps)
+
+    def _maybe_noisy_dn_input_labels(self, dn_labels: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        if self.dn_label_embed is None or self.dn_label_noise_ratio <= 0.0:
+            return dn_labels
+        noisy_labels = dn_labels.clone()
+        flip_mask = (torch.rand_like(noisy_labels, dtype=torch.float32) < self.dn_label_noise_ratio) & valid_mask
+        noisy_labels[flip_mask] = 1 - noisy_labels[flip_mask]
+        return noisy_labels
+
     def _build_dn_queries(
         self,
         targets: Optional[List[dict]],
         device: torch.device,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[Dict[str, torch.Tensor]]]:
-        if (not self.training) or targets is None or self.num_dn_groups <= 0:
+        if (not self.training) or targets is None or (not self.dn_enabled) or self.num_dn_groups <= 0:
             return None, None, None
         batch_size = len(targets)
         max_targets = max((target['curves'].shape[0] for target in targets), default=0)
         if max_targets <= 0:
             return None, None, None
 
-        single_pad = max_targets
-        pad_size = single_pad * self.num_dn_groups
+        positive_pad = max_targets
+        group_pad = positive_pad * (2 if self.dn_use_cdn else 1)
+        pad_size = group_pad * self.num_dn_groups
         eps = 1e-4
 
         dn_ref_curves = torch.full(
@@ -632,6 +668,7 @@ class DABCurveDETR(nn.Module):
             device=device,
         )
         dn_mask = torch.zeros((batch_size, pad_size), dtype=torch.bool, device=device)
+        dn_curve_mask = torch.zeros((batch_size, pad_size), dtype=torch.bool, device=device)
         dn_labels = torch.ones((batch_size, pad_size), dtype=torch.long, device=device)
 
         for batch_idx, target in enumerate(targets):
@@ -641,24 +678,37 @@ class DABCurveDETR(nn.Module):
             target_curves_int = curve_external_to_internal(target_curves_ext, self.config)
             count = target_curves_int.shape[0]
             for group_idx in range(self.num_dn_groups):
-                start = group_idx * single_pad
-                end = start + count
-                noisy = target_curves_int + torch.randn_like(target_curves_int) * self.dn_noise_scale
-                noisy = noisy.clamp(eps, 1.0 - eps)
-                dn_ref_curves[batch_idx, start:end] = noisy
-                dn_target_curves[batch_idx, start:end] = target_curves_ext
-                dn_mask[batch_idx, start:end] = True
-                dn_labels[batch_idx, start:end] = 0
+                group_start = group_idx * group_pad
+                pos_start = group_start
+                pos_end = pos_start + count
+                positive_noisy = self._sample_dn_noisy_curves(target_curves_int, negative=False)
+                dn_ref_curves[batch_idx, pos_start:pos_end] = positive_noisy
+                dn_target_curves[batch_idx, pos_start:pos_end] = target_curves_ext
+                dn_mask[batch_idx, pos_start:pos_end] = True
+                dn_curve_mask[batch_idx, pos_start:pos_end] = True
+                dn_labels[batch_idx, pos_start:pos_end] = 0
+                if self.dn_use_cdn:
+                    neg_start = group_start + positive_pad
+                    neg_end = neg_start + count
+                    negative_noisy = self._sample_dn_noisy_curves(target_curves_int, negative=True)
+                    dn_ref_curves[batch_idx, neg_start:neg_end] = negative_noisy
+                    dn_target_curves[batch_idx, neg_start:neg_end] = target_curves_ext
+                    dn_mask[batch_idx, neg_start:neg_end] = True
+                    dn_labels[batch_idx, neg_start:neg_end] = 1
 
-        dn_content = self._build_dn_query_content(dn_labels)
+        dn_input_labels = self._maybe_noisy_dn_input_labels(dn_labels, dn_mask)
+        dn_content = self._build_dn_query_content(dn_input_labels)
         dn_meta = {
             'mask': dn_mask,
+            'curve_mask': dn_curve_mask,
             'labels': dn_labels,
             'curves': dn_target_curves,
             'count': pad_size,
             'pad_size': pad_size,
-            'single_pad': single_pad,
+            'single_pad': group_pad,
+            'positive_pad': positive_pad,
             'num_dn_groups': self.num_dn_groups,
+            'use_cdn': self.dn_use_cdn,
         }
         dn_ref_unsigmoid = inverse_sigmoid(dn_ref_curves.reshape(batch_size, pad_size, self.curve_dim))
         return dn_content, dn_ref_unsigmoid, dn_meta

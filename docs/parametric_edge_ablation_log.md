@@ -138,16 +138,10 @@ Outputs:
 - Summary script: [scripts/summarize_addback_ablation.py](../scripts/summarize_addback_ablation.py)
 - Current summary artifacts are intentionally regenerated only after fresh reruns under the current data pipeline.
 
-How to regenerate the summary after runs finish:
-
-```bash
-python scripts/summarize_addback_ablation.py
-```
-
 Current conclusion:
 
 - Stale pre-reset outputs were removed.
-- This suite needs to be rerun before drawing any updated ranking across `aux`, `dn`, `one_to_many`, `topk`, and `distinct`.
+- The earlier grouped add-back suite is no longer an active maintenance target because the legacy one-to-many/top-k/distinct stack has been removed from the codebase.
 
 ## Ablation 2: All Functions Except DN
 

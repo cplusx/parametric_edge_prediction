@@ -1,7 +1,7 @@
 from typing import Dict, List
 
 from models.losses.matched import MatchedCurveLoss
-from models.losses.regularizers import DenoisingLoss, DistinctQueryLoss, OneToManyLoss, PositiveObjectLoss
+from models.losses.regularizers import DenoisingLoss
 from models.matcher import hungarian_curve_matching
 
 
@@ -17,17 +17,6 @@ WEIGHTED_TERM_SPECS = {
             'curve_dist': 'curve_distance_weight',
         },
     },
-    'om': {
-        'prefix': 'loss_om',
-        'outer_weight_key': 'one_to_many_weight',
-        'term_weight_keys': {
-            'ce': 'one_to_many_ce_weight',
-            'ctrl': 'one_to_many_ctrl_weight',
-            'sample': 'one_to_many_sample_weight',
-            'endpoint': 'one_to_many_endpoint_weight',
-            'curve_dist': 'one_to_many_curve_distance_weight',
-        },
-    },
 }
 
 
@@ -35,9 +24,6 @@ class ParametricEdgeLossComputer:
     def __init__(self, config: Dict) -> None:
         self.config = config
         self.matched_curve_loss = MatchedCurveLoss(config)
-        self.positive_object_loss = PositiveObjectLoss(config)
-        self.one_to_many_loss = OneToManyLoss(config, self.matched_curve_loss, self.positive_object_loss)
-        self.distinct_query_loss = DistinctQueryLoss(config)
         self.denoising_loss = DenoisingLoss(config)
 
     def _add_weighted_term_logs(self, log_values: Dict, scope: str, loss_cfg: Dict) -> None:
@@ -93,16 +79,6 @@ class ParametricEdgeLossComputer:
             aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
             total = total + aux_weight * aux_losses['loss_total']
             log_values[f'loss_aux_{level_idx}'] = aux_losses['loss_total'].detach()
-
-        one_to_many = self.one_to_many_loss(outputs, targets)
-        total = total + float(loss_cfg.get('one_to_many_weight', 0.0)) * one_to_many['loss_om_total']
-        for key, value in one_to_many.items():
-            log_values[key] = value.detach()
-        self._add_weighted_term_logs(log_values, 'om', loss_cfg)
-
-        loss_distinct = self.distinct_query_loss(outputs, targets)
-        total = total + float(loss_cfg.get('distinct_weight', 0.0)) * loss_distinct
-        log_values['loss_distinct'] = loss_distinct.detach()
 
         dn = self.denoising_loss(outputs)
         total = total + dn['loss_dn']

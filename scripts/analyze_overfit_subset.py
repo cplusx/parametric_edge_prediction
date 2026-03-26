@@ -60,11 +60,13 @@ def main():
                 outputs['pred_curves'],
                 targets,
                 control_cost=float(cfg['loss'].get('control_cost', 5.0)),
-                sample_cost=float(cfg['loss'].get('sample_cost', 2.0)),
-                giou_cost=float(cfg['loss'].get('giou_cost', 1.0)),
-                curve_distance_cost=float(cfg['loss'].get('curve_distance_cost', 1.0)),
+                endpoint_cost=float(cfg['loss'].get('endpoint_cost', 5.0)),
+                sample_cost=float(cfg['loss'].get('sample_cost', 0.0)),
+                curve_distance_cost=float(cfg['loss'].get('curve_distance_cost', 0.0)),
                 curve_match_point_count=int(cfg['loss'].get('curve_match_point_count', 4)),
                 num_curve_samples=int(cfg['loss'].get('num_curve_samples', 16)),
+                direction_invariant=bool(cfg['loss'].get('direction_invariant', True)),
+                config=cfg,
             )
             src_idx, _ = matched_indices[0]
             matched_curves = [outputs['pred_curves'][0, src_idx]]
@@ -79,8 +81,6 @@ def main():
                 'loss_ctrl': float(losses['loss_ctrl'].detach()),
                 'loss_curve_dist': float(losses['loss_curve_dist'].detach()),
                 'loss_endpoint': float(losses['loss_endpoint'].detach()),
-                'loss_giou': float(losses['loss_giou'].detach()),
-                'loss_om_topk': float(losses.get('loss_om_topk', torch.tensor(0.0)).detach()),
             })
 
     rows = sorted(rows, key=lambda x: x['num_targets'])

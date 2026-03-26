@@ -73,19 +73,7 @@ def build_loggers(config, root_dir: Path) -> List:
 
 def resolve_trainer_strategy(config) -> str:
     trainer_cfg = config.get('trainer', {})
-    strategy = trainer_cfg.get('strategy', 'auto')
-    if strategy != 'ddp_find_unused_parameters_false':
-        return strategy
-
-    loss_cfg = config.get('loss', {})
-    grouped_training = int(loss_cfg.get('group_detr_num_groups', 1)) > 1 and (
-        float(loss_cfg.get('one_to_many_weight', 0.0)) > 0.0
-        or float(loss_cfg.get('topk_positive_weight', 0.0)) > 0.0
-    )
-    if grouped_training:
-        print('Switching trainer strategy to ddp_find_unused_parameters_true for dynamic grouped-query training.')
-        return 'ddp_find_unused_parameters_true'
-    return strategy
+    return trainer_cfg.get('strategy', 'auto')
 
 
 def resolve_limit_train_batches(config):

@@ -83,12 +83,7 @@ def build_target(curves: torch.Tensor) -> List[Dict]:
 def preset_loss_config(base_config: Dict, preset_name: str) -> Dict:
     config = copy.deepcopy(base_config)
     loss_cfg = config['loss']
-    loss_cfg['group_detr_num_groups'] = 1
     loss_cfg['aux_weight'] = 0.0
-    loss_cfg['one_to_many_weight'] = 0.0
-    loss_cfg['topk_positive_enabled'] = False
-    loss_cfg['topk_positive_weight'] = 0.0
-    loss_cfg['distinct_weight'] = 0.0
     loss_cfg['dn_weight'] = 0.0
     loss_cfg['dn_curve_weight'] = 0.0
     if preset_name == 'current_main':

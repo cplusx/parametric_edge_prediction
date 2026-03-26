@@ -1,0 +1,57 @@
+data:
+  train_edge_globs:
+    - edge_data/HED-BSDS/gt_rgb/train/*.png
+  val_edge_glob: edge_data/HED-BSDS/gt_rgb/train/*.png
+  test_edge_glob: edge_data/HED-BSDS/gt_rgb/train/*.png
+  train_input_roots:
+    - edge_data/HED-BSDS/images/train
+  val_input_root: edge_data/HED-BSDS/images/train
+  test_input_root: edge_data/HED-BSDS/images/train
+  batch_size: 4
+  val_batch_size: 4
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+  train_augment: false
+  overfit_num_samples: 8
+
+model:
+  dab_force_legacy_cross_attn: true
+  dn_enabled: true
+  dn_use_cdn: true
+  dn_num_groups: 2
+  dn_noise_scale: 0.4
+  dn_negative_noise_bias: 1.0
+  dn_use_label_embed: false
+  dn_label_noise_ratio: 0.0
+
+loss:
+  dn_weight: 1.0
+  dn_curve_weight: 5.0
+
+trainer:
+  default_root_dir: outputs/parametric_edge_training/overfit_diverse8_dab_curve_cdn_local
+  max_epochs: 600
+  accelerator: auto
+  devices: 1
+  strategy: auto
+  precision: 32-true
+  accumulate_grad_batches: 1
+  deterministic: true
+  benchmark: false
+  log_every_n_steps: 1
+  gradient_clip_val: 0.1
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 10
+  run_test_after_fit: false
+
+callbacks:
+  visualization_every_n_epochs: 50
+  visualization_every_n_train_steps: 0
+  visualization_score_threshold: 0.5
+  visualization_max_curves: 300
+
+logging:
+  csv: true
+  wandb:
+    enabled: false
