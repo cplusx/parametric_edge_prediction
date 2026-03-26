@@ -90,20 +90,20 @@ loss:
   dynamic_class_balance: false
 
 optimizer:
-  lr: 0.00005
-  backbone_lr: 0.000025
+  lr: 0.00002
+  backbone_lr: 0.00001
   weight_decay: 0.0001
   beta1: 0.9
   beta2: 0.999
   scheduler: multistep
-  warmup_epochs: 20
+  warmup_epochs: 10
   warmup_start_factor: 0.1
   lr_milestones: [140, 180]
   lr_gamma: 0.1
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-4gpu-q300-eb64-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-4gpu-q300-eb64-lr2e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: 4
@@ -133,7 +133,7 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-dab-r50-4gpu-q300-eb64-lr5e5-fp32
+    name: laion-dab-r50-4gpu-q300-eb64-lr2e5-fp32
     group: laion-dab-pretrain
     job_type: train
     tags:
@@ -144,6 +144,6 @@ logging:
       - r50
       - q300
       - effective-batch-64
-      - lr5e-5
+      - lr2e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-4gpu-q300-eb64-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-4gpu-q300-eb64-lr2e5-fp32/wandb

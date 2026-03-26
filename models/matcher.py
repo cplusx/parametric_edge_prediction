@@ -12,6 +12,27 @@ from models.geometry import (
 )
 
 
+def _finite_debug_summary(name: str, tensor: torch.Tensor) -> str:
+    flat = tensor.detach().reshape(-1)
+    finite_mask = torch.isfinite(flat)
+    finite_count = int(finite_mask.sum().item())
+    total_count = int(flat.numel())
+    if finite_count > 0:
+        finite_vals = flat[finite_mask]
+        min_val = float(finite_vals.min().item())
+        max_val = float(finite_vals.max().item())
+        mean_val = float(finite_vals.mean().item())
+    else:
+        min_val = float('nan')
+        max_val = float('nan')
+        mean_val = float('nan')
+    return (
+        f"{name}: shape={tuple(tensor.shape)} "
+        f"finite={finite_count}/{total_count} "
+        f"min={min_val:.6g} max={max_val:.6g} mean={mean_val:.6g}"
+    )
+
+
 def _build_cost_matrix(
     logits: torch.Tensor,
     curves: torch.Tensor,
@@ -119,6 +140,16 @@ def hungarian_curve_matching(
             num_curve_samples=num_curve_samples,
             direction_invariant=direction_invariant,
         )
+        if not torch.isfinite(total_cost).all():
+            sample_id = target.get('sample_id', f'batch_{batch_idx}')
+            raise ValueError(
+                'Hungarian cost matrix contains invalid numeric entries.\n'
+                f'sample_id={sample_id}\n'
+                + _finite_debug_summary('pred_logits', logits[batch_idx]) + '\n'
+                + _finite_debug_summary('pred_curves', curves[batch_idx]) + '\n'
+                + _finite_debug_summary('tgt_curves', tgt_curves) + '\n'
+                + _finite_debug_summary('total_cost', total_cost)
+            )
         row_ind, col_ind = linear_sum_assignment(total_cost.detach().cpu().numpy())
         indices.append((torch.as_tensor(row_ind, dtype=torch.long, device=curves.device), torch.as_tensor(col_ind, dtype=torch.long, device=curves.device)))
     return indices
