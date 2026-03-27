@@ -12,7 +12,7 @@ from misc_utils.train_utils import sample_bezier_curves_torch
 from models import build_model
 from models.curve_coordinates import curve_internal_to_external
 from models.geometry import reverse_curve_points
-from models.matcher import hungarian_curve_matching
+from models.matcher import HungarianCurveMatcher
 
 
 def _align_target_to_prediction(
@@ -92,6 +92,7 @@ def main() -> None:
     device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
     model = build_model(config).to(device)
     model.eval()
+    matcher = HungarianCurveMatcher.from_config(config)
 
     image_size = int(config['data']['image_size'])
     loss_cfg = config['loss']
@@ -104,18 +105,10 @@ def main() -> None:
         images = batch['images'].to(device)
         targets = batch['targets']
         outputs = model(images, targets=targets)
-        indices = hungarian_curve_matching(
+        indices = matcher(
             logits=outputs['pred_logits'],
             curves=outputs['pred_curves'],
             targets=targets,
-            control_cost=float(loss_cfg.get('control_cost', 5.0)),
-            endpoint_cost=float(loss_cfg.get('endpoint_cost', 5.0)),
-            sample_cost=float(loss_cfg.get('sample_cost', 0.0)),
-            curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
-            curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-            num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-            direction_invariant=bool(loss_cfg.get('direction_invariant', True)),
-            config=config,
         )
 
         pred_curves_ext = curve_internal_to_external(outputs['pred_curves'], config)

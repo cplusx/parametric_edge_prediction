@@ -59,6 +59,39 @@ def bernstein_basis_numpy(degree: int, t_values: np.ndarray) -> np.ndarray:
     return np.stack(basis, axis=1).astype(np.float32)
 
 
+def resample_polyline_by_arclength(points: np.ndarray, num_points: int) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError(f'Expected [N, 2] polyline, got {points.shape}')
+    if points.shape[0] == 0:
+        raise ValueError('Cannot resample empty polyline')
+    if points.shape[0] == 1:
+        return np.repeat(points, num_points, axis=0)
+    if points.shape[0] == num_points:
+        return points.astype(np.float32)
+
+    deltas = np.diff(points, axis=0)
+    seg_lengths = np.linalg.norm(deltas, axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(seg_lengths)])
+    total = cumulative[-1]
+    if total <= 1e-6:
+        return np.repeat(points[:1], num_points, axis=0)
+
+    samples = np.linspace(0.0, total, num_points, dtype=np.float32)
+    resampled: List[np.ndarray] = []
+    seg_idx = 0
+    for sample_pos in samples:
+        while seg_idx < len(seg_lengths) - 1 and cumulative[seg_idx + 1] < sample_pos:
+            seg_idx += 1
+        seg_start = cumulative[seg_idx]
+        seg_length = max(seg_lengths[seg_idx], 1e-6)
+        alpha = (sample_pos - seg_start) / seg_length
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        point = points[seg_idx] * (1.0 - alpha) + points[seg_idx + 1] * alpha
+        resampled.append(point.astype(np.float32))
+    return np.stack(resampled, axis=0).astype(np.float32)
+
+
 def fit_polyline_to_bezier(points: np.ndarray, degree: int) -> np.ndarray:
     points = np.asarray(points, dtype=np.float32)
     if points.ndim != 2 or points.shape[1] != 2:
@@ -71,6 +104,13 @@ def fit_polyline_to_bezier(points: np.ndarray, degree: int) -> np.ndarray:
     pN = points[-1]
     if points.shape[0] == 2:
         return np.linspace(p0, pN, degree + 1, dtype=np.float32)
+    if points.shape[0] < degree + 1:
+        # Cropped polylines can collapse to very few points. Resampling them to the
+        # target count before fitting avoids underconstrained high-degree fits that
+        # produce spurious sharp curves or control points far outside the image.
+        points = resample_polyline_by_arclength(points, degree + 1)
+        p0 = points[0]
+        pN = points[-1]
 
     deltas = np.diff(points, axis=0)
     seg_lengths = np.linalg.norm(deltas, axis=1)

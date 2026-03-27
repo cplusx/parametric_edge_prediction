@@ -2,7 +2,7 @@ from typing import Dict, List
 
 from models.losses.matched import MatchedCurveLoss
 from models.losses.regularizers import DenoisingLoss
-from models.matcher import hungarian_curve_matching
+from models.matcher import HungarianCurveMatcher
 
 
 WEIGHTED_TERM_SPECS = {
@@ -25,6 +25,7 @@ class ParametricEdgeLossComputer:
         self.config = config
         self.matched_curve_loss = MatchedCurveLoss(config)
         self.denoising_loss = DenoisingLoss(config)
+        self.matcher = HungarianCurveMatcher.from_config(config)
 
     def _add_weighted_term_logs(self, log_values: Dict, scope: str, loss_cfg: Dict) -> None:
         spec = WEIGHTED_TERM_SPECS[scope]
@@ -42,19 +43,11 @@ class ParametricEdgeLossComputer:
 
     def __call__(self, outputs: Dict, targets: List[dict]) -> Dict:
         loss_cfg = self.config['loss']
-        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
-        indices = hungarian_curve_matching(
+        aux_reuse_main_matching = bool(loss_cfg.get('aux_reuse_main_matching', False))
+        indices = self.matcher(
             logits=outputs['pred_logits'],
             curves=outputs['pred_curves'],
             targets=targets,
-            control_cost=float(loss_cfg.get('control_cost', 5.0)),
-            endpoint_cost=float(loss_cfg.get('endpoint_cost', 5.0)),
-            sample_cost=float(loss_cfg.get('sample_cost', 0.0)),
-            curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
-            curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-            num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-            direction_invariant=direction_invariant,
-            config=self.config,
         )
         base = self.matched_curve_loss(outputs['pred_curves'], outputs['pred_logits'], targets, indices, outputs)
         total = base['loss_total']
@@ -63,18 +56,10 @@ class ParametricEdgeLossComputer:
 
         aux_weight = float(loss_cfg.get('aux_weight', 0.5))
         for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
-            aux_indices = hungarian_curve_matching(
+            aux_indices = indices if aux_reuse_main_matching else self.matcher(
                 logits=aux['pred_logits'],
                 curves=aux['pred_curves'],
                 targets=targets,
-                control_cost=float(loss_cfg.get('control_cost', 5.0)),
-                endpoint_cost=float(loss_cfg.get('endpoint_cost', 5.0)),
-                sample_cost=float(loss_cfg.get('sample_cost', 0.0)),
-                curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
-                curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-                num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                direction_invariant=direction_invariant,
-                config=self.config,
             )
             aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
             total = total + aux_weight * aux_losses['loss_total']

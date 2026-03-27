@@ -25,8 +25,15 @@ class DenoisingLoss(BaseLossComponent):
         mask = dn_meta['mask'].to(device)
         curve_mask = dn_meta.get('curve_mask', mask).to(device)
         gt_curves = curve_external_to_internal(dn_meta['curves'].to(device), self.config)
-        query_weights = mask.to(dtype=logits.dtype)
-        loss_ce = self.classification(logits, labels, query_weights=query_weights)
+        use_cdn = bool(dn_meta.get('use_cdn', False))
+        if use_cdn:
+            query_weights = mask.to(dtype=logits.dtype)
+            loss_ce = self.classification(logits, labels, query_weights=query_weights)
+        else:
+            # Plain DN only reconstructs noisy positive curves. In this mode all
+            # valid DN slots share the same object label, so a classification
+            # term provides no contrastive signal and only adds noise.
+            loss_ce = logits.sum() * 0.0
         if curve_mask.any():
             pred_valid = curves[curve_mask]
             target_valid = gt_curves[curve_mask]

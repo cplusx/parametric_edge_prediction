@@ -7,7 +7,7 @@ import torch
 
 from misc_utils.train_utils import sample_bezier_curves_torch
 from models.curve_coordinates import curve_internal_to_external
-from models.matcher import hungarian_curve_matching
+from models.matcher import HungarianCurveMatcher
 
 
 def _plot_curve(ax, curves: torch.Tensor, color: str, linewidth: float = 2.0, show_points: bool = True) -> None:
@@ -58,17 +58,11 @@ class TrackedCurveVisualizer(pl.Callback):
         if was_training:
             pl_module.train()
 
-        matched = hungarian_curve_matching(
-            predictions["pred_logits"],
-            predictions["pred_curves"],
-            batch["targets"],
-            control_cost=float(pl_module.config["loss"].get("control_cost", 5.0)),
-            sample_cost=float(pl_module.config["loss"].get("sample_cost", 2.0)),
-            curve_distance_cost=float(pl_module.config["loss"].get("curve_distance_cost", 0.0)),
-            curve_match_point_count=int(pl_module.config["loss"].get("curve_match_point_count", 4)),
-            num_curve_samples=int(pl_module.config["loss"].get("num_curve_samples", 16)),
-            direction_invariant=bool(pl_module.config["loss"].get("direction_invariant", True)),
-            config=pl_module.config,
+        matcher = HungarianCurveMatcher.from_config(pl_module.config)
+        matched = matcher(
+            logits=predictions["pred_logits"],
+            curves=predictions["pred_curves"],
+            targets=batch["targets"],
         )[sample_batch_idx]
         src_idx, tgt_idx = matched
         matched_pred = None

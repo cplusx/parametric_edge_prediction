@@ -57,6 +57,7 @@ Primary configs:
 
 - [configs/parametric_edge/default.yaml](../configs/parametric_edge/default.yaml)
 - [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml)
+- [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce_endpointheavy.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce_endpointheavy.yaml)
 - [configs/parametric_edge/bsds_formal.yaml](../configs/parametric_edge/bsds_formal.yaml)
 
 Current mainline design:
@@ -87,9 +88,10 @@ Current mainline does **not** use:
 
 DN support still exists inside `DABCurveDETR` as an optional training-time feature, but it is not part of the stripped mainline path unless explicitly enabled again in config.
 
-LAION pretrain now uses a unified CE + DN + aux config:
+LAION pretrain now uses a unified CE + DN + aux config, with an endpoint-heavy variant available:
 
 - [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml)
+- [configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce_endpointheavy.yaml](../configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce_endpointheavy.yaml)
 - `trainer.devices` is resolved at runtime from the visible GPU count
 - `trainer.accumulate_grad_batches` is inferred from `trainer.effective_batch_size`, current GPU count, and `data.batch_size`
 - output dir and wandb name auto-format with `{devices}` so the same config can run on 2 GPU or 4 GPU nodes
@@ -138,7 +140,7 @@ Current example:
 ```bash
 sbatch <<'EOF'
 #!/usr/bin/env bash
-#SBATCH -J laion-dab-r50-q300-eb64-lr2e5-fp32
+#SBATCH -J laion-dab-r50-q300-eb64-lr2e5-fp32-dn-aux-ce
 #SBATCH -p gbunchQ
 #SBATCH --gres=gpu:4
 #SBATCH -c 32
@@ -153,7 +155,7 @@ source "$HOME/anaconda3/etc/profile.d/conda.sh"
 conda activate diffusers
 set -u
 cd ~/parametric_edge_prediction
-python train.py --config configs/parametric_edge/laion_pretrain_cluster.yaml
+python train.py --config configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml
 EOF
 ```
 
