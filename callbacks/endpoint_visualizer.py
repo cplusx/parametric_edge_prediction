@@ -24,6 +24,26 @@ class ParametricEndpointVisualizer(pl.Callback):
         self.score_threshold = score_threshold
         self.train_batches_seen = 0
 
+    @staticmethod
+    def _wandb_log_image(trainer, key: str, image_path: Path, caption: str, global_step: int, epoch: int) -> None:
+        image_path = Path(image_path)
+        if not image_path.exists():
+            return
+        loggers = getattr(trainer, 'loggers', None)
+        if loggers is None:
+            single_logger = getattr(trainer, 'logger', None)
+            loggers = [] if single_logger is None else [single_logger]
+        for logger in loggers:
+            if logger is None or logger.__class__.__name__ != 'WandbLogger':
+                continue
+            import wandb
+
+            logger.experiment.log({
+                key: wandb.Image(str(image_path), caption=caption),
+                'trainer/current_epoch': epoch,
+                'trainer/global_step': global_step,
+            })
+
     def _predict_points(self, pl_module, batch):
         was_training = pl_module.training
         pl_module.eval()
@@ -54,6 +74,23 @@ class ParametricEndpointVisualizer(pl.Callback):
         matched_path = vis_dir / f'{split}_{token}_matched.jpg'
         render_point_grid(batch['images'], batch['targets'], scored_points, score_path)
         render_point_grid(batch['images'], batch['targets'], matched_points, matched_path)
+        caption = f'{split}:{token}'
+        self._wandb_log_image(
+            trainer,
+            f'visualizations/{split}_scored_points',
+            score_path,
+            caption,
+            global_step=trainer.global_step,
+            epoch=trainer.current_epoch,
+        )
+        self._wandb_log_image(
+            trainer,
+            f'visualizations/{split}_matched_points',
+            matched_path,
+            caption,
+            global_step=trainer.global_step,
+            epoch=trainer.current_epoch,
+        )
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.sanity_checking or not trainer.is_global_zero:
