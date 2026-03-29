@@ -8,9 +8,10 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.loggers import WandbLogger
 
+from callbacks.endpoint_visualizer import ParametricEndpointVisualizer
 from callbacks.training_visualizer import ParametricEdgeVisualizer
 from callbacks.tracked_curve_visualizer import TrackedCurveVisualizer
-from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
+from edge_datasets import build_datamodule
 from misc_utils.config_utils import load_config
 from pl_trainer.parametric_edge_trainer import ParametricEdgeLightningModule
 
@@ -164,7 +165,7 @@ def main() -> None:
     root_dir = Path(config['trainer']['default_root_dir'])
     root_dir.mkdir(parents=True, exist_ok=True)
 
-    datamodule = ParametricEdgeDataModule(config)
+    datamodule = build_datamodule(config)
     model = ParametricEdgeLightningModule(config)
     if config['model'].get('pretrained_checkpoint'):
         load_pretrained_with_query_expansion(model, config['model']['pretrained_checkpoint'])
@@ -178,12 +179,21 @@ def main() -> None:
         filename='best-{epoch:03d}-{val_loss_main:.4f}',
         auto_insert_metric_name=False,
     )
-    visualizer = ParametricEdgeVisualizer(
-        val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
-        train_every_n_steps=int(config['callbacks'].get('visualization_every_n_train_steps', 0)),
-        max_score_curves=int(config['callbacks'].get('visualization_max_curves', 24)),
-        score_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.3)),
-    )
+    arch = str(config.get('model', {}).get('arch', 'dab_curve_detr')).lower()
+    if arch == 'dab_endpoint_detr':
+        visualizer = ParametricEndpointVisualizer(
+            val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
+            train_every_n_steps=int(config['callbacks'].get('visualization_every_n_train_steps', 0)),
+            max_score_points=int(config['callbacks'].get('visualization_max_points', 64)),
+            score_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.3)),
+        )
+    else:
+        visualizer = ParametricEdgeVisualizer(
+            val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
+            train_every_n_steps=int(config['callbacks'].get('visualization_every_n_train_steps', 0)),
+            max_score_curves=int(config['callbacks'].get('visualization_max_curves', 24)),
+            score_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.3)),
+        )
     callbacks = [checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer]
     tracked_curve_cfg = config.get('callbacks', {}).get('tracked_curve')
     if tracked_curve_cfg and bool(tracked_curve_cfg.get('enabled', False)):

@@ -96,6 +96,13 @@ LAION pretrain now uses a unified CE + DN + aux config, with an endpoint-heavy v
 - `trainer.accumulate_grad_batches` is inferred from `trainer.effective_batch_size`, current GPU count, and `data.batch_size`
 - output dir and wandb name auto-format with `{devices}` so the same config can run on 2 GPU or 4 GPU nodes
 
+Endpoint-only pretraining is tracked separately:
+
+- [configs/parametric_edge/laion_endpoint_pretrain_aux_ce.yaml](../configs/parametric_edge/laion_endpoint_pretrain_aux_ce.yaml)
+- [configs/parametric_edge/laion_endpoint_pretrain_dn_aux_ce.yaml](../configs/parametric_edge/laion_endpoint_pretrain_dn_aux_ce.yaml)
+- the aux-ce variant reuses the main matching for aux layers
+- these use `dab_endpoint_detr` and the same runtime scaling convention as the main LAION configs
+
 ## Current Optimizer / Runtime Defaults
 
 LAION mainline:

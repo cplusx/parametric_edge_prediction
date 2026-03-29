@@ -1,3 +1,18 @@
-from models.losses.composite import ParametricEdgeLossComputer, build_loss_computer, compute_losses
+from models.losses.composite import ParametricEdgeLossComputer
+from models.losses.endpoint_composite import EndpointLossComputer
 
-__all__ = ['ParametricEdgeLossComputer', 'build_loss_computer', 'compute_losses']
+
+def build_loss_computer(config):
+    arch = str(config.get('model', {}).get('arch', 'dab_curve_detr')).lower()
+    if arch == 'dab_curve_detr':
+        return ParametricEdgeLossComputer(config)
+    if arch == 'dab_endpoint_detr':
+        return EndpointLossComputer(config)
+    raise ValueError(f'Unsupported model.arch for loss selection: {arch}')
+
+
+def compute_losses(outputs, targets, config):
+    return build_loss_computer(config)(outputs, targets)
+
+
+__all__ = ['ParametricEdgeLossComputer', 'EndpointLossComputer', 'build_loss_computer', 'compute_losses']
