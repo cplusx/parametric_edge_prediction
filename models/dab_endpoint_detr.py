@@ -18,7 +18,8 @@ class DABEndpointDETR(nn.Module):
         self.num_encoder_layers = int(model_cfg.get('num_encoder_layers', 6))
         self.num_decoder_layers = int(model_cfg.get('num_decoder_layers', 6))
         self.num_heads = int(model_cfg.get('nheads', 8))
-        self.ffn_dim = int(model_cfg.get('dim_feedforward', self.hidden_dim * 4))
+        self.encoder_ffn_dim = int(model_cfg.get('encoder_dim_feedforward', model_cfg.get('dim_feedforward', self.hidden_dim * 4)))
+        self.decoder_ffn_dim = int(model_cfg.get('decoder_dim_feedforward', model_cfg.get('dim_feedforward', self.hidden_dim * 4)))
         self.dropout = float(model_cfg.get('dropout', 0.0))
         self.object_bias = float(model_cfg.get('object_bias', -2.0))
         self.no_object_bias = float(model_cfg.get('no_object_bias', 2.0))
@@ -35,13 +36,14 @@ class DABEndpointDETR(nn.Module):
         self.dn_label_noise_ratio = float(model_cfg.get('dn_label_noise_ratio', 0.0))
         self.aux_weight = float(config['loss'].get('aux_weight', 0.0))
         self.aux_layer_stride = max(1, int(config['loss'].get('aux_layer_stride', 1)))
+        self.aux_last_n_layers = max(0, int(config['loss'].get('aux_last_n_layers', 0)))
 
         self.backbone = DABResNetBackbone(config)
         self.input_proj = nn.Conv2d(self.backbone.num_channels, self.hidden_dim, kernel_size=1)
         self.encoder = DABEncoder(
             d_model=self.hidden_dim,
             nhead=self.num_heads,
-            dim_feedforward=self.ffn_dim,
+            dim_feedforward=self.encoder_ffn_dim,
             dropout=self.dropout,
             num_layers=self.num_encoder_layers,
             gradient_checkpointing=self.gradient_checkpointing,
@@ -49,7 +51,7 @@ class DABEndpointDETR(nn.Module):
         self.decoder = DABCurveDecoder(
             d_model=self.hidden_dim,
             nhead=self.num_heads,
-            dim_feedforward=self.ffn_dim,
+            dim_feedforward=self.decoder_ffn_dim,
             dropout=self.dropout,
             num_layers=self.num_decoder_layers,
             curve_dim=2,
@@ -88,7 +90,10 @@ class DABEndpointDETR(nn.Module):
         if self.aux_weight <= 0.0:
             return []
         aux_layers = max(0, self.num_decoder_layers - 1)
-        return list(range(0, aux_layers, self.aux_layer_stride))
+        indices = list(range(aux_layers))
+        if self.aux_last_n_layers > 0:
+            indices = indices[-self.aux_last_n_layers:]
+        return indices[:: self.aux_layer_stride]
 
     def _set_aux_outputs(self, outputs_class: torch.Tensor, outputs_points: torch.Tensor, dn_count: int) -> List[Dict[str, torch.Tensor]]:
         aux_indices = self._selected_aux_layer_indices()
