@@ -97,9 +97,6 @@ class ParametricEndpointDataset(Dataset):
         return max(1, min(int(cap), self.curriculum_max_points))
 
     def _rng_for_index(self, index: int) -> np.random.Generator:
-        if self.curriculum_enabled and self.split == 'train' and self.train_augment:
-            seed = (int(index) * 1000003 + int(self.current_epoch) * 9176 + 12345) % (2 ** 32)
-            return np.random.default_rng(seed)
         return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
 
     def _build_item(self, index: int) -> Dict:
@@ -209,9 +206,6 @@ class LaionSyntheticEndpointDataset(Dataset):
         return max(1, min(int(cap), self.curriculum_max_points))
 
     def _rng_for_index(self, index: int) -> np.random.Generator:
-        if self.curriculum_enabled and self.split == 'train' and self.train_augment:
-            seed = (int(index) * 1000003 + int(self.current_epoch) * 9176 + 12345) % (2 ** 32)
-            return np.random.default_rng(seed)
         return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
 
     def _build_item(self, index: int) -> Dict:
