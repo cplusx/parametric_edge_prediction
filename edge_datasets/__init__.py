@@ -9,6 +9,8 @@ def build_datamodule(config):
     arch = str(config.get('model', {}).get('arch', 'dab_curve_detr')).lower()
     if arch == 'dab_endpoint_detr':
         return EndpointDetectionDataModule(config)
+    if arch == 'endpoint_flow_matching':
+        return EndpointDetectionDataModule(config)
     if arch == 'dab_curve_detr':
         return ParametricEdgeDataModule(config)
     raise ValueError(f'Unsupported model.arch for datamodule selection: {arch}')
