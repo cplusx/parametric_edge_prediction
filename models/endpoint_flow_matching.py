@@ -138,7 +138,8 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
 
     @classmethod
     def from_config_dict(cls, config: Dict) -> 'EndpointFlowMatchingModel':
-        model_cfg = config['model']
+        model_cfg = dict(config['model'])
+        model_cfg.pop('arch', None)
         return cls(**model_cfg)
 
     def set_epoch(self, epoch: int) -> None:
