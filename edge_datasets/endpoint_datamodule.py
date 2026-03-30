@@ -1,5 +1,7 @@
 from pathlib import Path
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
+
+from torch.utils.data import ConcatDataset
 
 from edge_datasets.endpoint_dataset import (
     LaionSyntheticEndpointDataset,
@@ -7,10 +9,28 @@ from edge_datasets.endpoint_dataset import (
     endpoint_detection_collate,
 )
 from edge_datasets.laion_synthetic_dataset import discover_laion_synthetic_samples
-from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
+from edge_datasets.parametric_edge_datamodule import DistributedCurriculumSampler, ParametricEdgeDataModule, RepeatedDataset
+
+
+def _dataset_curriculum_counts(dataset) -> List[int]:
+    if hasattr(dataset, 'get_curriculum_counts'):
+        return list(dataset.get_curriculum_counts())
+    if isinstance(dataset, RepeatedDataset):
+        base_counts = _dataset_curriculum_counts(dataset.base_dataset)
+        return base_counts * int(dataset.repeat_factor)
+    if isinstance(dataset, ConcatDataset):
+        counts: List[int] = []
+        for sub_dataset in dataset.datasets:
+            counts.extend(_dataset_curriculum_counts(sub_dataset))
+        return counts
+    raise TypeError(f'Unsupported dataset type for curriculum counts: {type(dataset)!r}')
 
 
 class EndpointDetectionDataModule(ParametricEdgeDataModule):
+    def __init__(self, config: Dict) -> None:
+        super().__init__(config)
+        self.train_curriculum_counts: List[int] = []
+
     def _build_dataset(self, edge_paths: Sequence[Path], split: str, train_augment: bool, common: Dict) -> ParametricEndpointDataset:
         return ParametricEndpointDataset(
             edge_paths,
@@ -53,3 +73,36 @@ class EndpointDetectionDataModule(ParametricEdgeDataModule):
         loader_kwargs = super()._loader_kwargs()
         loader_kwargs['collate_fn'] = endpoint_detection_collate
         return loader_kwargs
+
+    def setup(self, stage=None) -> None:
+        super().setup(stage=stage)
+        self.train_sampler = None
+        self.train_curriculum_counts = []
+        model_cfg = self.config.get('model', {})
+        if str(model_cfg.get('arch', '')).lower() != 'endpoint_flow_matching':
+            return
+        if self.train_dataset is None:
+            return
+        counts = _dataset_curriculum_counts(self.train_dataset)
+        if not counts:
+            raise ValueError('Curriculum sampler received an empty train dataset.')
+        self.train_curriculum_counts = counts
+
+    def train_dataloader(self):
+        model_cfg = self.config.get('model', {})
+        if (
+            str(model_cfg.get('arch', '')).lower() == 'endpoint_flow_matching'
+            and self.train_sampler is None
+            and self.train_curriculum_counts
+        ):
+            self.train_sampler = DistributedCurriculumSampler(
+                self.train_dataset,
+                self.train_curriculum_counts,
+                start_points=int(model_cfg.get('curriculum_start_points', 100)),
+                max_points=int(model_cfg.get('curriculum_max_points', 200)),
+                points_per_epoch=int(model_cfg.get('curriculum_points_per_epoch', 10)),
+                shuffle=True,
+                seed=int(self.config.get('data', {}).get('split_seed', 42)),
+                drop_last=False,
+            )
+        return super().train_dataloader()

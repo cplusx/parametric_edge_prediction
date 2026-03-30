@@ -231,6 +231,7 @@ def main() -> None:
         benchmark=bool(config['trainer'].get('benchmark', False)),
         num_sanity_val_steps=int(config['trainer'].get('num_sanity_val_steps', 2)),
         check_val_every_n_epoch=int(config['trainer'].get('check_val_every_n_epoch', 1)),
+        use_distributed_sampler=bool(config['trainer'].get('use_distributed_sampler', False)),
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=args.resume_from)
     if bool(config['trainer'].get('run_test_after_fit', True)):

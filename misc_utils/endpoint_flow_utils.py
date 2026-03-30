@@ -46,7 +46,7 @@ def build_uniform_flow_batch(
         row_idx = torch.as_tensor(row_ind, dtype=torch.long, device=source_points.device)
         col_idx = torch.as_tensor(col_ind, dtype=torch.long, device=source_points.device)
         aligned_targets[batch_idx, row_idx] = points[col_idx]
-        valid_mask[batch_idx, :count] = True
+        valid_mask[batch_idx, row_idx] = True
     return source_points, aligned_targets, valid_mask
 
 

@@ -23,6 +23,12 @@ class ParametricEdgeLightningModule(pl.LightningModule):
             images = images.contiguous(memory_format=torch.channels_last)
         return self.model(images, targets=targets)
 
+    def on_train_epoch_start(self) -> None:
+        self.model.set_epoch(self.current_epoch)
+        datamodule = getattr(self.trainer, 'datamodule', None)
+        if datamodule is not None and hasattr(datamodule, 'set_epoch'):
+            datamodule.set_epoch(self.current_epoch)
+
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
         outputs = self(batch['images'], targets=batch['targets'])

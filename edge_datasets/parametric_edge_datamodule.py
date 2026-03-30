@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import pytorch_lightning as pl
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+import torch
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Sampler
 
 from edge_datasets.laion_synthetic_dataset import LaionSyntheticEdgeDataset, discover_laion_synthetic_samples
 from edge_datasets.parametric_edge_dataset import ParametricEdgeDataset, parametric_edge_collate
@@ -69,6 +70,94 @@ class RepeatedDataset(Dataset):
         return self.base_dataset[index % len(self.base_dataset)]
 
 
+class DistributedCurriculumSampler(Sampler[int]):
+    def __init__(
+        self,
+        dataset: Dataset,
+        sample_counts: Sequence[int],
+        *,
+        start_points: int,
+        max_points: int,
+        points_per_epoch: int,
+        shuffle: bool = True,
+        seed: int = 0,
+        drop_last: bool = False,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
+    ) -> None:
+        if len(sample_counts) != len(dataset):
+            raise ValueError(
+                f'sample_counts length {len(sample_counts)} does not match dataset length {len(dataset)}'
+            )
+        if num_replicas is None:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                num_replicas = torch.distributed.get_world_size()
+            else:
+                num_replicas = 1
+        if rank is None:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+            else:
+                rank = 0
+        self.dataset = dataset
+        self.sample_counts = [int(count) for count in sample_counts]
+        self.start_points = int(start_points)
+        self.max_points = int(max_points)
+        self.points_per_epoch = int(points_per_epoch)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.drop_last = bool(drop_last)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def current_cap(self) -> int:
+        cap = self.start_points + self.epoch * self.points_per_epoch
+        return max(1, min(int(cap), self.max_points))
+
+    def _eligible_indices(self) -> List[int]:
+        cap = self.current_cap()
+        return [index for index, count in enumerate(self.sample_counts) if 0 < int(count) <= cap]
+
+    def _compute_rank_indices(self) -> List[int]:
+        indices = self._eligible_indices()
+        if not indices:
+            return []
+        if self.shuffle:
+            generator = torch.Generator()
+            generator.manual_seed(self.seed + self.epoch)
+            order = torch.randperm(len(indices), generator=generator).tolist()
+            indices = [indices[position] for position in order]
+        if self.drop_last:
+            total_size = (len(indices) // self.num_replicas) * self.num_replicas
+            indices = indices[:total_size]
+        else:
+            total_size = int(math.ceil(len(indices) / self.num_replicas)) * self.num_replicas
+            if total_size > len(indices):
+                padding = indices[: total_size - len(indices)]
+                indices = indices + padding
+        return indices[self.rank:total_size:self.num_replicas]
+
+    def _num_samples(self) -> int:
+        num_indices = len(self._eligible_indices())
+        if num_indices == 0:
+            return 0
+        if self.drop_last:
+            total_size = (num_indices // self.num_replicas) * self.num_replicas
+        else:
+            total_size = int(math.ceil(num_indices / self.num_replicas)) * self.num_replicas
+        return total_size // self.num_replicas
+
+    def __iter__(self):
+        return iter(self._compute_rank_indices())
+
+    def __len__(self) -> int:
+        return self._num_samples()
+
+
 class ParametricEdgeDataModule(pl.LightningDataModule):
     def __init__(self, config: Dict) -> None:
         super().__init__()
@@ -76,6 +165,7 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
+        self.train_sampler: Optional[Sampler[int]] = None
 
     def _split_input_roots(self, split: str) -> Optional[List[Path]]:
         data_cfg = self.config['data']
@@ -288,11 +378,17 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             'persistent_workers': bool(num_workers > 0 and self.config['data'].get('persistent_workers', True)),
         }
 
+    def set_epoch(self, epoch: int) -> None:
+        if self.train_sampler is not None and hasattr(self.train_sampler, 'set_epoch'):
+            self.train_sampler.set_epoch(int(epoch))
+
     def train_dataloader(self) -> DataLoader:
+        shuffle = self.train_sampler is None
         return DataLoader(
             self.train_dataset,
             batch_size=int(self.config['data']['batch_size']),
-            shuffle=True,
+            shuffle=shuffle,
+            sampler=self.train_sampler,
             **self._loader_kwargs(),
         )
 

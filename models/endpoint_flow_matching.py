@@ -204,9 +204,14 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         timestep_proj = self.time_proj(timestep)
         timestep_emb = self.time_embed(timestep_proj.to(dtype=sample.dtype)).unsqueeze(1)
         hidden = self.point_proj(sample) + timestep_emb
+        safe_query_padding_mask = query_padding_mask
         if query_padding_mask is not None:
+            safe_query_padding_mask = query_padding_mask.clone()
+            fully_masked = safe_query_padding_mask.all(dim=1)
+            if fully_masked.any():
+                safe_query_padding_mask[fully_masked, 0] = False
             hidden = hidden.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
-        hidden = self._decode(hidden, memory, memory_key_padding_mask, query_padding_mask)
+        hidden = self._decode(hidden, memory, memory_key_padding_mask, safe_query_padding_mask)
         velocity = self.velocity_head(hidden)
         if query_padding_mask is not None:
             velocity = velocity.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
@@ -215,25 +220,8 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
     def forward(self, images: torch.Tensor, targets=None) -> Dict[str, torch.Tensor]:
         if targets is None:
             raise ValueError('EndpointFlowMatchingModel.forward requires targets for training/validation. Use the pipeline for inference.')
-        original_batch_size = images.shape[0]
         point_counts = [max(0, int(target['points'].shape[0])) for target in targets]
         curriculum_cap = self._current_curriculum_cap()
-        kept_indices = list(range(len(targets)))
-        if self.training:
-            kept_indices = [idx for idx, count in enumerate(point_counts) if count <= curriculum_cap]
-            if not kept_indices:
-                zero = images.sum() * 0.0
-                return {
-                    'skip_batch': True,
-                    'loss_main_proxy': zero,
-                    'pred_group_count': 1,
-                    'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
-                    'kept_samples': torch.tensor(0.0, device=images.device),
-                    'skipped_samples': torch.tensor(float(len(targets)), device=images.device),
-                }
-            images = images[kept_indices]
-            targets = [targets[idx] for idx in kept_indices]
-            point_counts = [point_counts[idx] for idx in kept_indices]
         batch_size = images.shape[0]
         active_points = max(max(point_counts), 1)
         source_points_ext = sample_uniform_points(
@@ -273,5 +261,5 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             'cond_drop_mask': cond_drop_mask,
             'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
             'kept_samples': torch.tensor(float(batch_size), device=images.device),
-            'skipped_samples': torch.tensor(float(original_batch_size - batch_size), device=images.device),
+            'skipped_samples': torch.tensor(0.0, device=images.device),
         }

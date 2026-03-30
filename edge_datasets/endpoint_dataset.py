@@ -15,6 +15,7 @@ from misc_utils.bezier_target_utils import (
     unpack_polylines,
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
+from misc_utils.endpoint_target_utils import polylines_to_unique_endpoint_count
 
 
 def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_path: str, input_path: str) -> Dict:
@@ -72,6 +73,7 @@ class ParametricEndpointDataset(Dataset):
         self.train_augment = bool(train_augment)
         self.augment_cfg = dict(augment_cfg or {})
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
+        self._curriculum_counts: Optional[List[int]] = None
 
     def __len__(self) -> int:
         return len(self.edge_paths)
@@ -120,6 +122,23 @@ class ParametricEndpointDataset(Dataset):
             input_path=str(image_path),
         )
 
+    def get_curriculum_counts(self) -> List[int]:
+        if self._curriculum_counts is not None:
+            return list(self._curriculum_counts)
+        counts: List[int] = []
+        for edge_path in self.edge_paths:
+            cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
+            graph_data = load_cached_graph(cache_path)
+            polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+            counts.append(
+                polylines_to_unique_endpoint_count(
+                    polylines,
+                    dedupe_distance_px=self.endpoint_dedupe_distance_px,
+                )
+            )
+        self._curriculum_counts = counts
+        return list(self._curriculum_counts)
+
 
 class LaionSyntheticEndpointDataset(Dataset):
     def __init__(
@@ -145,6 +164,7 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.augment_cfg = dict(augment_cfg or {})
         self.rgb_input = bool(rgb_input)
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
+        self._curriculum_counts: Optional[List[int]] = None
 
     def __len__(self) -> int:
         return len(self.sample_records)
@@ -191,6 +211,22 @@ class LaionSyntheticEndpointDataset(Dataset):
             edge_path=str(record['edge_path']),
             input_path=str(record['image_path']),
         )
+
+    def get_curriculum_counts(self) -> List[int]:
+        if self._curriculum_counts is not None:
+            return list(self._curriculum_counts)
+        counts: List[int] = []
+        for record in self.sample_records:
+            graph_data = load_cached_graph(Path(record['cache_path']))
+            polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+            counts.append(
+                polylines_to_unique_endpoint_count(
+                    polylines,
+                    dedupe_distance_px=self.endpoint_dedupe_distance_px,
+                )
+            )
+        self._curriculum_counts = counts
+        return list(self._curriculum_counts)
 
 
 def endpoint_detection_collate(batch: List[Dict]) -> Dict:
