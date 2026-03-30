@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 from torch import nn
@@ -144,7 +144,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
 
-    def _encode_image(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         src, mask, pos = self.backbone(images)
         src = self.input_proj(src)
         pos = pos.to(src.dtype)
