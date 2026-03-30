@@ -16,7 +16,8 @@ from misc_utils.bezier_target_utils import (
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
-_CURRICULUM_MAX_ATTEMPTS = 64
+_CURRICULUM_MAX_ATTEMPTS = 16
+_ENDPOINT_SAMPLE_RETRY_EXCEPTIONS = (FileNotFoundError, OSError, ValueError, KeyError, EOFError)
 
 
 def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_path: str, input_path: str) -> Dict:
@@ -42,6 +43,33 @@ def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_p
             'input_path': input_path,
             'curriculum_direct_accept': torch.tensor(1.0, dtype=torch.float32),
             'curriculum_redirected_request': torch.tensor(0.0, dtype=torch.float32),
+            'curriculum_rejected_candidates': torch.tensor(0.0, dtype=torch.float32),
+        },
+    }
+
+
+def _empty_endpoint_item(
+    *,
+    image_size: int,
+    rgb_input: bool,
+    sample_id: str,
+    edge_path: str,
+    input_path: str,
+) -> Dict:
+    channels = 3 if rgb_input else 1
+    return {
+        'image': torch.zeros((channels, image_size, image_size), dtype=torch.float32),
+        'target': {
+            'labels': torch.zeros((0,), dtype=torch.long),
+            'points': torch.zeros((0, 2), dtype=torch.float32),
+            'image_size': torch.tensor([image_size, image_size], dtype=torch.long),
+            'edge_mask': torch.zeros((1, image_size, image_size), dtype=torch.float32),
+            'num_targets': torch.tensor(0, dtype=torch.long),
+            'sample_id': sample_id,
+            'edge_path': edge_path,
+            'input_path': input_path,
+            'curriculum_direct_accept': torch.tensor(0.0, dtype=torch.float32),
+            'curriculum_redirected_request': torch.tensor(1.0, dtype=torch.float32),
             'curriculum_rejected_candidates': torch.tensor(0.0, dtype=torch.float32),
         },
     }
@@ -166,7 +194,12 @@ class ParametricEndpointDataset(Dataset):
         best_item = None
         best_excess = None
         while attempt < _CURRICULUM_MAX_ATTEMPTS:
-            item = self._build_item(candidate_index)
+            try:
+                item = self._build_item(candidate_index)
+            except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+                attempt += 1
+                candidate_index = int(rng.integers(0, dataset_len))
+                continue
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
                 item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if attempt == 0 else 0.0, dtype=torch.float32)
@@ -180,7 +213,14 @@ class ParametricEndpointDataset(Dataset):
             attempt += 1
             candidate_index = int(rng.integers(0, dataset_len))
         if best_item is None:
-            best_item = self._build_item(index)
+            edge_path = self.edge_paths[int(index) % len(self.edge_paths)]
+            best_item = _empty_endpoint_item(
+                image_size=self.image_size,
+                rgb_input=self.rgb_input,
+                sample_id=f'{edge_path.stem}_empty_fallback',
+                edge_path=str(edge_path),
+                input_path='',
+            )
         best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
         best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
         best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
@@ -299,7 +339,12 @@ class LaionSyntheticEndpointDataset(Dataset):
         best_item = None
         best_excess = None
         while attempt < _CURRICULUM_MAX_ATTEMPTS:
-            item = self._build_item(candidate_index)
+            try:
+                item = self._build_item(candidate_index)
+            except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+                attempt += 1
+                candidate_index = int(rng.integers(0, dataset_len))
+                continue
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
                 item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if attempt == 0 else 0.0, dtype=torch.float32)
@@ -313,7 +358,15 @@ class LaionSyntheticEndpointDataset(Dataset):
             attempt += 1
             candidate_index = int(rng.integers(0, dataset_len))
         if best_item is None:
-            best_item = self._build_item(index)
+            record = self.sample_records[int(index) % len(self.sample_records)]
+            sample_id = f"{record['batch_name']}_{record['image_id']}_empty_fallback"
+            best_item = _empty_endpoint_item(
+                image_size=self.image_size,
+                rgb_input=self.rgb_input,
+                sample_id=sample_id,
+                edge_path=str(record['edge_path']),
+                input_path=str(record['image_path']),
+            )
         best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
         best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
         best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)

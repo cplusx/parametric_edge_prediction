@@ -77,7 +77,6 @@ model:
   curriculum_start_points: 150
   curriculum_max_points: 250
   curriculum_points_per_epoch: 10
-  curriculum_random_retries: 4
 
 loss:
   velocity_weight: 1.0

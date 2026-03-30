@@ -116,6 +116,31 @@ def _write_laion_entry_cache(cache_path: Path, records: Sequence[Dict[str, Path]
             handle.write('\n')
 
 
+def _empty_laion_curve_item(record: Dict[str, Path], image_size: int, target_degree: int, rgb_input: bool) -> Dict:
+    channels = 3 if rgb_input else 1
+    control_points = int(target_degree) + 1
+    sample_id = f"{record['batch_name']}_{record['image_id']}_empty_fallback"
+    return {
+        'image': torch.zeros((channels, image_size, image_size), dtype=torch.float32),
+        'target': {
+            'labels': torch.zeros((0,), dtype=torch.long),
+            'curves': torch.zeros((0, control_points, 2), dtype=torch.float32),
+            'boxes': torch.zeros((0, 4), dtype=torch.float32),
+            'curve_lengths': torch.zeros((0,), dtype=torch.float32),
+            'curve_norm_lengths': torch.zeros((0,), dtype=torch.float32),
+            'curve_curvatures': torch.zeros((0,), dtype=torch.float32),
+            'image_size': torch.tensor([image_size, image_size], dtype=torch.long),
+            'edge_mask': torch.zeros((1, image_size, image_size), dtype=torch.float32),
+            'num_targets': torch.tensor(0, dtype=torch.long),
+            'sample_id': sample_id,
+            'edge_path': str(record['edge_path']),
+            'input_path': str(record['image_path']),
+            'cache_path': str(record['cache_path']),
+            'dataset_name': 'laion_synthetic',
+        },
+    }
+
+
 def select_laion_sample_records(
     sample_records: Sequence[Dict[str, Path]],
     max_samples: Optional[int] = None,
@@ -309,20 +334,35 @@ class LaionSyntheticEdgeDataset(Dataset):
         }
 
     def __getitem__(self, index: int) -> Dict:
-        last_error = None
         tried_indices = set()
         candidate_index = int(index) % len(self.sample_records)
-        for attempt in range(self.max_load_attempts):
+        attempt = 0
+        while attempt < self.max_load_attempts:
             if candidate_index in tried_indices:
-                candidate_index = self._choose_fallback_index(index, attempt, tried_indices)
-                if candidate_index is None:
+                next_index = self._choose_fallback_index(index, attempt, tried_indices)
+                if next_index is None:
                     break
+                candidate_index = next_index
             tried_indices.add(candidate_index)
             try:
                 return self._load_item_from_index(candidate_index)
-            except LAION_SAMPLE_LOAD_EXCEPTIONS as error:
-                last_error = error
-                candidate_index = self._choose_fallback_index(index, attempt + 1, tried_indices)
-                if candidate_index is None:
+            except LAION_SAMPLE_LOAD_EXCEPTIONS:
+                next_index = self._choose_fallback_index(index, attempt + 1, tried_indices)
+                if next_index is None:
                     break
-        raise RuntimeError(f'Unable to load a readable LAION sample after {len(tried_indices)} attempts.') from last_error
+                else:
+                    candidate_index = next_index
+                attempt += 1
+        fallback_indices = list(self.known_good_indices) + [i for i in range(len(self.sample_records)) if i not in self.known_good_indices]
+        for fallback_index in fallback_indices:
+            try:
+                return self._load_item_from_index(int(fallback_index))
+            except LAION_SAMPLE_LOAD_EXCEPTIONS:
+                continue
+        record = self.sample_records[int(index) % len(self.sample_records)]
+        return _empty_laion_curve_item(
+            record=record,
+            image_size=self.image_size,
+            target_degree=self.target_degree,
+            rgb_input=self.rgb_input,
+        )
