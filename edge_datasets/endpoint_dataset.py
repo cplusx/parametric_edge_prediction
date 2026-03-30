@@ -96,6 +96,12 @@ class ParametricEndpointDataset(Dataset):
         cap = self.curriculum_start_points + self.current_epoch * self.curriculum_points_per_epoch
         return max(1, min(int(cap), self.curriculum_max_points))
 
+    def _rng_for_index(self, index: int) -> np.random.Generator:
+        if self.curriculum_enabled and self.split == 'train' and self.train_augment:
+            seed = (int(index) * 1000003 + int(self.current_epoch) * 9176 + 12345) % (2 ** 32)
+            return np.random.default_rng(seed)
+        return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+
     def _build_item(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
         cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
@@ -104,7 +110,7 @@ class ParametricEndpointDataset(Dataset):
         image = load_image_array_original(image_path, rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(edge_path).astype(np.float32)[..., None] / 255.0
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-        rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+        rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
             image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
                 image=image,
@@ -202,13 +208,19 @@ class LaionSyntheticEndpointDataset(Dataset):
         cap = self.curriculum_start_points + self.current_epoch * self.curriculum_points_per_epoch
         return max(1, min(int(cap), self.curriculum_max_points))
 
+    def _rng_for_index(self, index: int) -> np.random.Generator:
+        if self.curriculum_enabled and self.split == 'train' and self.train_augment:
+            seed = (int(index) * 1000003 + int(self.current_epoch) * 9176 + 12345) % (2 ** 32)
+            return np.random.default_rng(seed)
+        return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
         graph_data = load_cached_graph(Path(record['cache_path']))
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-        rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+        rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
             image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
                 image=image,
