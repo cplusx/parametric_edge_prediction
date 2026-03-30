@@ -67,6 +67,7 @@ class EndpointDetectionDataModule(ParametricEdgeDataModule):
             augment_cfg=dict(common['augment_cfg']),
             rgb_input=bool(common['rgb_input']),
             endpoint_dedupe_distance_px=float(self.config['data'].get('endpoint_dedupe_distance_px', 2.0)),
+            curriculum_cache_root=Path(dataset_cfg.get('cache_root', Path(dataset_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
         )
 
     def _loader_kwargs(self) -> Dict:
