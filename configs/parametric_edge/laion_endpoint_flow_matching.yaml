@@ -11,7 +11,7 @@ data:
   persistent_workers: true
   target_degree: 5
   min_curve_length: 3.0
-  max_targets: 300
+  max_targets: 1024
   endpoint_dedupe_distance_px: 2.0
   train_augment: true
   augment:

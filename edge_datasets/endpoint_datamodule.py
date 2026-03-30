@@ -90,19 +90,24 @@ class EndpointDetectionDataModule(ParametricEdgeDataModule):
 
     def train_dataloader(self):
         model_cfg = self.config.get('model', {})
-        if (
-            str(model_cfg.get('arch', '')).lower() == 'endpoint_flow_matching'
-            and self.train_sampler is None
-            and self.train_curriculum_counts
-        ):
-            self.train_sampler = DistributedCurriculumSampler(
-                self.train_dataset,
-                self.train_curriculum_counts,
-                start_points=int(model_cfg.get('curriculum_start_points', 100)),
-                max_points=int(model_cfg.get('curriculum_max_points', 200)),
-                points_per_epoch=int(model_cfg.get('curriculum_points_per_epoch', 10)),
-                shuffle=True,
-                seed=int(self.config.get('data', {}).get('split_seed', 42)),
-                drop_last=False,
-            )
+        if str(model_cfg.get('arch', '')).lower() == 'endpoint_flow_matching':
+            trainer_cfg = self.config.get('trainer', {})
+            if bool(trainer_cfg.get('use_distributed_sampler', False)):
+                raise ValueError(
+                    'endpoint_flow_matching requires trainer.use_distributed_sampler=false '
+                    'so the curriculum sampler remains in control of per-rank sample selection.'
+                )
+            if self.train_sampler is None:
+                if not self.train_curriculum_counts:
+                    raise ValueError('endpoint_flow_matching requires precomputed curriculum counts before building train_dataloader.')
+                self.train_sampler = DistributedCurriculumSampler(
+                    self.train_dataset,
+                    self.train_curriculum_counts,
+                    start_points=int(model_cfg.get('curriculum_start_points', 100)),
+                    max_points=int(model_cfg.get('curriculum_max_points', 200)),
+                    points_per_epoch=int(model_cfg.get('curriculum_points_per_epoch', 10)),
+                    shuffle=True,
+                    seed=int(self.config.get('data', {}).get('split_seed', 42)),
+                    drop_last=False,
+                )
         return super().train_dataloader()
