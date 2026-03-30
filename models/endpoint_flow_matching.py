@@ -104,6 +104,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         curriculum_start_points: int = 150,
         curriculum_max_points: int = 250,
         curriculum_points_per_epoch: int = 10,
+        curriculum_global_skip_points: int = 400,
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
@@ -114,6 +115,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         self.curriculum_start_points = int(curriculum_start_points)
         self.curriculum_max_points = int(curriculum_max_points)
         self.curriculum_points_per_epoch = int(curriculum_points_per_epoch)
+        self.curriculum_global_skip_points = int(curriculum_global_skip_points)
 
         backbone_config = {
             'model': {

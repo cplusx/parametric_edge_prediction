@@ -4,9 +4,9 @@ data:
   include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
-  batch_size: 64
+  batch_size: 16
   val_batch_size: 16
-  num_workers: 16
+  num_workers: 20
   pin_memory: true
   persistent_workers: true
   target_degree: 5
@@ -77,6 +77,7 @@ model:
   curriculum_start_points: 150
   curriculum_max_points: 250
   curriculum_points_per_epoch: 10
+  curriculum_global_skip_points: 400
 
 loss:
   velocity_weight: 1.0

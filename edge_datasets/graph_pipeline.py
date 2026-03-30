@@ -410,6 +410,51 @@ def build_targets_from_polylines(
     }
 
 
+def build_endpoint_targets_from_polylines(
+    polylines: List[np.ndarray],
+    image_shape: Tuple[int, int],
+    dedupe_distance_px: float,
+) -> Dict[str, np.ndarray]:
+    height, width = image_shape
+    endpoints: List[np.ndarray] = []
+    for polyline in polylines:
+        points = np.asarray(polyline, dtype=np.float32)
+        if points.ndim != 2 or points.shape[0] < 2:
+            continue
+        endpoints.append(points[0])
+        endpoints.append(points[-1])
+
+    if endpoints:
+        scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
+        centers_px: List[np.ndarray] = []
+        counts: List[int] = []
+        threshold = float(dedupe_distance_px)
+        for point_px in endpoints:
+            point_px = np.asarray(point_px, dtype=np.float32)
+            if not centers_px:
+                centers_px.append(point_px.copy())
+                counts.append(1)
+                continue
+            distances = np.linalg.norm(np.stack(centers_px, axis=0) - point_px[None, :], axis=1)
+            best_idx = int(np.argmin(distances))
+            if float(distances[best_idx]) <= threshold:
+                count = counts[best_idx]
+                centers_px[best_idx] = (centers_px[best_idx] * count + point_px) / float(count + 1)
+                counts[best_idx] = count + 1
+            else:
+                centers_px.append(point_px.copy())
+                counts.append(1)
+        point_array = np.stack(centers_px, axis=0).astype(np.float32) / scale[None, :]
+        point_array = np.clip(point_array, 0.0, 1.0)
+    else:
+        point_array = np.zeros((0, 2), dtype=np.float32)
+
+    return {
+        'points': point_array.astype(np.float32),
+        'image_size': np.asarray([height, width], dtype=np.int64),
+    }
+
+
 def prepare_training_sample(
     image: np.ndarray,
     polylines: List[np.ndarray],
@@ -504,6 +549,51 @@ def prepare_training_sample_with_mask(
     return image, (mask > 0.5).astype(np.float32), targets
 
 
+def prepare_training_endpoint_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    image_size,
+    augment_cfg: Dict,
+    rng: np.random.Generator,
+    dedupe_distance_px: float,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
+    resize_scale = float(rng.uniform(resize_min, resize_max))
+    scale_min, scale_max = augment_cfg.get('affine_scale_range', [0.95, 1.05])
+    affine_scale = float(rng.uniform(scale_min, scale_max))
+    safe_resize_multiplier = resize_scale / max(affine_scale, 1e-6)
+    image, polylines = resize_with_aspect_ratio(image, polylines, output_size=output_size, scale_multiplier=safe_resize_multiplier)
+    resized_h, resized_w = image.shape[:2]
+    mask = _resize_mask(mask if mask.ndim == 3 else mask[..., None], resized_h, resized_w)
+
+    if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
+        image, polylines = apply_horizontal_flip(image, polylines)
+        mask = mask[:, ::-1].copy()
+    if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
+        image, polylines = apply_vertical_flip(image, polylines)
+        mask = mask[::-1].copy()
+
+    max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
+    angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
+    translate_ratio = float(augment_cfg.get('affine_max_translate_ratio', 0.0))
+    translate_x = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[1])
+    translate_y = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[0])
+    matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
+    image = apply_affine_to_image(image, matrix_xy)
+    mask = apply_affine_to_mask(mask, matrix_xy)
+    polylines = apply_affine_to_polylines(polylines, matrix_xy)
+
+    image, mask, polylines = random_crop_image_mask_and_polylines(image, mask, polylines, crop_size=output_size, rng=rng)
+    targets = build_endpoint_targets_from_polylines(
+        polylines,
+        image_shape=image.shape[:2],
+        dedupe_distance_px=dedupe_distance_px,
+    )
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
 def prepare_eval_sample_with_mask(
     image: np.ndarray,
     mask: np.ndarray,
@@ -516,4 +606,21 @@ def prepare_eval_sample_with_mask(
     output_size = _size_tuple(image_size)
     image, mask, polylines = letterbox_image_mask_and_polylines(image, mask, polylines, output_size=output_size)
     targets = build_targets_from_polylines(polylines, image_shape=image.shape[:2], target_degree=target_degree, min_curve_length=min_curve_length, max_targets=max_targets)
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
+def prepare_eval_endpoint_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    image_size,
+    dedupe_distance_px: float,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    image, mask, polylines = letterbox_image_mask_and_polylines(image, mask, polylines, output_size=output_size)
+    targets = build_endpoint_targets_from_polylines(
+        polylines,
+        image_shape=image.shape[:2],
+        dedupe_distance_px=dedupe_distance_px,
+    )
     return image, (mask > 0.5).astype(np.float32), targets

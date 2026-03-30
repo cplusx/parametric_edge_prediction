@@ -82,6 +82,7 @@ class EndpointDetectionDataModule(ParametricEdgeDataModule):
                     start_points=int(model_cfg.get('curriculum_start_points', 150)),
                     max_points=int(model_cfg.get('curriculum_max_points', 250)),
                     points_per_epoch=int(model_cfg.get('curriculum_points_per_epoch', 10)),
+                    global_skip_points=int(model_cfg.get('curriculum_global_skip_points', 400)),
                 )
 
         _walk_train_datasets(self.train_dataset, configure)

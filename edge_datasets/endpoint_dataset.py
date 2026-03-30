@@ -5,7 +5,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_training_sample_with_mask
+from edge_datasets.graph_pipeline import (
+    build_endpoint_targets_from_polylines,
+    prepare_eval_endpoint_sample_with_mask,
+    prepare_training_endpoint_sample_with_mask,
+)
 from misc_utils.bezier_target_utils import (
     ensure_graph_cache,
     load_binary_edge_annotation,
@@ -16,18 +20,20 @@ from misc_utils.bezier_target_utils import (
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
-_CURRICULUM_MAX_ATTEMPTS = 16
 _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS = (FileNotFoundError, OSError, ValueError, KeyError, EOFError)
 
 
 def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_path: str, input_path: str) -> Dict:
     image_chw = np.transpose(target_data['image_hwc'], (2, 0, 1))
     edge_chw = np.transpose(target_data['edge_hwc'], (2, 0, 1))
-    points = curves_to_unique_endpoints(
-        target_data['curves'],
-        image_size=target_data['image_size'],
-        dedupe_distance_px=float(target_data.get('endpoint_dedupe_distance_px', 2.0)),
-    )
+    if 'points' in target_data:
+        points = np.asarray(target_data['points'], dtype=np.float32)
+    else:
+        points = curves_to_unique_endpoints(
+            target_data['curves'],
+            image_size=target_data['image_size'],
+            dedupe_distance_px=float(target_data.get('endpoint_dedupe_distance_px', 2.0)),
+        )
     point_tensor = torch.from_numpy(points).float()
     labels = torch.zeros((point_tensor.shape[0],), dtype=torch.long)
     return {
@@ -109,7 +115,9 @@ class ParametricEndpointDataset(Dataset):
         self.curriculum_start_points = 0
         self.curriculum_max_points = 0
         self.curriculum_points_per_epoch = 0
+        self.curriculum_global_skip_points = 0
         self.current_epoch = 0
+        self._raw_endpoint_count_cache: Dict[int, int] = {}
 
     def __len__(self) -> int:
         return len(self.edge_paths)
@@ -121,11 +129,13 @@ class ParametricEndpointDataset(Dataset):
         start_points: int,
         max_points: int,
         points_per_epoch: int,
+        global_skip_points: int = 0,
     ) -> None:
         self.curriculum_enabled = bool(enabled)
         self.curriculum_start_points = int(start_points)
         self.curriculum_max_points = int(max_points)
         self.curriculum_points_per_epoch = int(points_per_epoch)
+        self.curriculum_global_skip_points = int(global_skip_points)
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
@@ -139,6 +149,15 @@ class ParametricEndpointDataset(Dataset):
     def _rng_for_index(self, index: int) -> np.random.Generator:
         return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
 
+    @staticmethod
+    def _random_redirect_index(rng: np.random.Generator, current_index: int, dataset_len: int) -> int:
+        if dataset_len <= 1:
+            return int(current_index)
+        redirected = int(rng.integers(0, dataset_len - 1))
+        if redirected >= current_index:
+            redirected += 1
+        return redirected
+
     def _build_item(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
         cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
@@ -149,26 +168,22 @@ class ParametricEndpointDataset(Dataset):
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
         rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
-            image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_training_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
                 polylines=polylines,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
-                max_targets=self.max_targets,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
+                dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
         else:
-            image_hwc, edge_hwc, target_data = prepare_eval_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_eval_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
                 polylines=polylines,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
-                max_targets=self.max_targets,
+                dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
         target_data = {
             **target_data,
@@ -183,48 +198,69 @@ class ParametricEndpointDataset(Dataset):
             input_path=str(image_path),
         )
 
+    def _raw_endpoint_count(self, index: int) -> int:
+        cached = self._raw_endpoint_count_cache.get(int(index))
+        if cached is not None:
+            return int(cached)
+        edge_path = self.edge_paths[index]
+        cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
+        graph_data = load_cached_graph(cache_path)
+        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        image_size = np.asarray(graph_data.get('image_size', [self.image_size, self.image_size]), dtype=np.int64)
+        targets = build_endpoint_targets_from_polylines(
+            polylines=polylines,
+            image_shape=(int(image_size[0]), int(image_size[1])),
+            dedupe_distance_px=self.endpoint_dedupe_distance_px,
+        )
+        count = int(targets['points'].shape[0])
+        self._raw_endpoint_count_cache[int(index)] = count
+        return count
+
     def __getitem__(self, index: int) -> Dict:
         if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
             return self._build_item(index)
         cap = self._current_curriculum_cap()
         dataset_len = len(self.edge_paths)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
-        attempt = 0
-        candidate_index = int(index)
-        best_item = None
-        best_excess = None
-        while attempt < _CURRICULUM_MAX_ATTEMPTS:
+        if self.curriculum_global_skip_points > 0:
             try:
-                item = self._build_item(candidate_index)
+                raw_point_count = self._raw_endpoint_count(index)
             except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
-                attempt += 1
-                candidate_index = int(rng.integers(0, dataset_len))
-                continue
-            point_count = int(item['target']['points'].shape[0])
-            if 0 < point_count <= cap:
-                item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if attempt == 0 else 0.0, dtype=torch.float32)
-                item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if attempt == 0 else 1.0, dtype=torch.float32)
-                item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
-                return item
-            excess = abs(point_count - cap)
-            if best_item is None or best_excess is None or excess < best_excess:
-                best_item = item
-                best_excess = excess
-            attempt += 1
-            candidate_index = int(rng.integers(0, dataset_len))
-        if best_item is None:
-            edge_path = self.edge_paths[int(index) % len(self.edge_paths)]
-            best_item = _empty_endpoint_item(
-                image_size=self.image_size,
-                rgb_input=self.rgb_input,
-                sample_id=f'{edge_path.stem}_empty_fallback',
-                edge_path=str(edge_path),
-                input_path='',
+                raw_point_count = None
+            if raw_point_count is None or raw_point_count > self.curriculum_global_skip_points:
+                redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+                redirected_item = self[redirected_index]
+                redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+                redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+                redirected_item['target']['curriculum_rejected_candidates'] = (
+                    redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+                )
+                return redirected_item
+        try:
+            item = self._build_item(index)
+        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+            redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+            redirected_item = self[redirected_index]
+            redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+            redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+            redirected_item['target']['curriculum_rejected_candidates'] = (
+                redirected_item['target']['curriculum_rejected_candidates'] + 1.0
             )
-        best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-        best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-        best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
-        return best_item
+            return redirected_item
+        point_count = int(item['target']['points'].shape[0])
+        if 0 < point_count <= cap:
+            item['target']['curriculum_direct_accept'] = torch.tensor(1.0, dtype=torch.float32)
+            item['target']['curriculum_redirected_request'] = torch.tensor(0.0, dtype=torch.float32)
+            item['target']['curriculum_rejected_candidates'] = torch.tensor(0.0, dtype=torch.float32)
+            return item
+        redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+        redirected_item = self[redirected_index]
+        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_rejected_candidates'] = (
+            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+        )
+        return redirected_item
 
 
 class LaionSyntheticEndpointDataset(Dataset):
@@ -255,7 +291,9 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.curriculum_start_points = 0
         self.curriculum_max_points = 0
         self.curriculum_points_per_epoch = 0
+        self.curriculum_global_skip_points = 0
         self.current_epoch = 0
+        self._raw_endpoint_count_cache: Dict[int, int] = {}
 
     def __len__(self) -> int:
         return len(self.sample_records)
@@ -267,11 +305,13 @@ class LaionSyntheticEndpointDataset(Dataset):
         start_points: int,
         max_points: int,
         points_per_epoch: int,
+        global_skip_points: int = 0,
     ) -> None:
         self.curriculum_enabled = bool(enabled)
         self.curriculum_start_points = int(start_points)
         self.curriculum_max_points = int(max_points)
         self.curriculum_points_per_epoch = int(points_per_epoch)
+        self.curriculum_global_skip_points = int(global_skip_points)
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
@@ -285,6 +325,15 @@ class LaionSyntheticEndpointDataset(Dataset):
     def _rng_for_index(self, index: int) -> np.random.Generator:
         return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
 
+    @staticmethod
+    def _random_redirect_index(rng: np.random.Generator, current_index: int, dataset_len: int) -> int:
+        if dataset_len <= 1:
+            return int(current_index)
+        redirected = int(rng.integers(0, dataset_len - 1))
+        if redirected >= current_index:
+            redirected += 1
+        return redirected
+
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
         graph_data = load_cached_graph(Path(record['cache_path']))
@@ -293,26 +342,22 @@ class LaionSyntheticEndpointDataset(Dataset):
         polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
         rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
-            image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_training_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
                 polylines=polylines,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
-                max_targets=self.max_targets,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
+                dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
         else:
-            image_hwc, edge_hwc, target_data = prepare_eval_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_eval_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
                 polylines=polylines,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
-                max_targets=self.max_targets,
+                dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
         target_data = {
             **target_data,
@@ -328,49 +373,68 @@ class LaionSyntheticEndpointDataset(Dataset):
             input_path=str(record['image_path']),
         )
 
+    def _raw_endpoint_count(self, index: int) -> int:
+        cached = self._raw_endpoint_count_cache.get(int(index))
+        if cached is not None:
+            return int(cached)
+        record = self.sample_records[index]
+        graph_data = load_cached_graph(Path(record['cache_path']))
+        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        image_size = np.asarray(graph_data.get('image_size', [self.image_size, self.image_size]), dtype=np.int64)
+        targets = build_endpoint_targets_from_polylines(
+            polylines=polylines,
+            image_shape=(int(image_size[0]), int(image_size[1])),
+            dedupe_distance_px=self.endpoint_dedupe_distance_px,
+        )
+        count = int(targets['points'].shape[0])
+        self._raw_endpoint_count_cache[int(index)] = count
+        return count
+
     def __getitem__(self, index: int) -> Dict:
         if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
             return self._build_item(index)
         cap = self._current_curriculum_cap()
         dataset_len = len(self.sample_records)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
-        attempt = 0
-        candidate_index = int(index)
-        best_item = None
-        best_excess = None
-        while attempt < _CURRICULUM_MAX_ATTEMPTS:
+        if self.curriculum_global_skip_points > 0:
             try:
-                item = self._build_item(candidate_index)
+                raw_point_count = self._raw_endpoint_count(index)
             except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
-                attempt += 1
-                candidate_index = int(rng.integers(0, dataset_len))
-                continue
-            point_count = int(item['target']['points'].shape[0])
-            if 0 < point_count <= cap:
-                item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if attempt == 0 else 0.0, dtype=torch.float32)
-                item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if attempt == 0 else 1.0, dtype=torch.float32)
-                item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
-                return item
-            excess = abs(point_count - cap)
-            if best_item is None or best_excess is None or excess < best_excess:
-                best_item = item
-                best_excess = excess
-            attempt += 1
-            candidate_index = int(rng.integers(0, dataset_len))
-        if best_item is None:
-            record = self.sample_records[int(index) % len(self.sample_records)]
-            sample_id = f"{record['batch_name']}_{record['image_id']}_empty_fallback"
-            best_item = _empty_endpoint_item(
-                image_size=self.image_size,
-                rgb_input=self.rgb_input,
-                sample_id=sample_id,
-                edge_path=str(record['edge_path']),
-                input_path=str(record['image_path']),
+                raw_point_count = None
+            if raw_point_count is None or raw_point_count > self.curriculum_global_skip_points:
+                redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+                redirected_item = self[redirected_index]
+                redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+                redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+                redirected_item['target']['curriculum_rejected_candidates'] = (
+                    redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+                )
+                return redirected_item
+        try:
+            item = self._build_item(index)
+        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+            redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+            redirected_item = self[redirected_index]
+            redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+            redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+            redirected_item['target']['curriculum_rejected_candidates'] = (
+                redirected_item['target']['curriculum_rejected_candidates'] + 1.0
             )
-        best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-        best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-        best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
-        return best_item
+            return redirected_item
+        point_count = int(item['target']['points'].shape[0])
+        if 0 < point_count <= cap:
+            item['target']['curriculum_direct_accept'] = torch.tensor(1.0, dtype=torch.float32)
+            item['target']['curriculum_redirected_request'] = torch.tensor(0.0, dtype=torch.float32)
+            item['target']['curriculum_rejected_candidates'] = torch.tensor(0.0, dtype=torch.float32)
+            return item
+        redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+        redirected_item = self[redirected_index]
+        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_rejected_candidates'] = (
+            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+        )
+        return redirected_item
 
 
 def endpoint_detection_collate(batch: List[Dict]) -> Dict:
