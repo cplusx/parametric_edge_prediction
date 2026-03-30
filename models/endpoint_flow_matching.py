@@ -5,14 +5,13 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from misc_utils.endpoint_flow_utils import pad_endpoint_targets, scale_points_to_flow
+from misc_utils.endpoint_flow_utils import match_uniform_points_to_targets, sample_uniform_points, scale_points_to_flow
 from models.dab_curve_detr import DABEncoder, DABResNetBackbone
 
 try:
     from diffusers.configuration_utils import ConfigMixin, register_to_config
     from diffusers.models.embeddings import TimestepEmbedding, Timesteps
     from diffusers.models.modeling_utils import ModelMixin
-    from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
     from diffusers.utils import BaseOutput
 except ImportError as exc:  # pragma: no cover - exercised on cluster env
     raise ImportError(
@@ -23,7 +22,6 @@ except ImportError as exc:  # pragma: no cover - exercised on cluster env
 @dataclass
 class EndpointFlowMatchingOutput(BaseOutput):
     sample: torch.FloatTensor
-    presence_logits: torch.FloatTensor
 
 
 class EndpointFlowDecoderLayer(nn.Module):
@@ -114,7 +112,6 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             gradient_checkpointing=bool(gradient_checkpointing),
         )
         self.point_proj = nn.Linear(2, self.hidden_dim)
-        self.query_embed = nn.Embedding(self.num_points, self.hidden_dim)
         self.time_proj = Timesteps(self.hidden_dim, flip_sin_to_cos=True, downscale_freq_shift=0)
         self.time_embed = TimestepEmbedding(self.hidden_dim, self.hidden_dim)
         self.decoder_layers = nn.ModuleList(
@@ -130,11 +127,6 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         )
         self.final_norm = nn.LayerNorm(self.hidden_dim)
         self.velocity_head = nn.Linear(self.hidden_dim, 2)
-        self.presence_head = nn.Linear(self.hidden_dim, 1)
-        self.training_scheduler = FlowMatchEulerDiscreteScheduler(
-            num_train_timesteps=self.num_train_timesteps,
-            shift=float(scheduler_shift),
-        )
         self.current_epoch = 0
 
     @classmethod
@@ -171,25 +163,30 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             timestep = timestep[None].expand(sample.shape[0])
         timestep_proj = self.time_proj(timestep)
         timestep_emb = self.time_embed(timestep_proj.to(dtype=sample.dtype)).unsqueeze(1)
-        query_embed = self.query_embed.weight.unsqueeze(0).expand(sample.shape[0], -1, -1)
-        hidden = self.point_proj(sample) + query_embed + timestep_emb
+        hidden = self.point_proj(sample) + timestep_emb
         hidden = self._decode(hidden, memory, memory_key_padding_mask)
         velocity = self.velocity_head(hidden)
-        presence_logits = self.presence_head(hidden).squeeze(-1)
-        return EndpointFlowMatchingOutput(sample=velocity, presence_logits=presence_logits)
+        return EndpointFlowMatchingOutput(sample=velocity)
 
     def forward(self, images: torch.Tensor, targets=None) -> Dict[str, torch.Tensor]:
         if targets is None:
             raise ValueError('EndpointFlowMatchingModel.forward requires targets for training/validation. Use the pipeline for inference.')
-        clean_points_ext, valid_mask = pad_endpoint_targets(targets, self.num_points)
-        clean_points = scale_points_to_flow(clean_points_ext).to(device=images.device, dtype=images.dtype)
-        valid_mask = valid_mask.to(device=images.device)
         batch_size = images.shape[0]
+        source_points_ext = sample_uniform_points(
+            batch_size,
+            self.num_points,
+            device=images.device,
+            dtype=images.dtype,
+        )
+        target_points_ext, valid_mask = match_uniform_points_to_targets(source_points_ext, targets)
+        source_points = scale_points_to_flow(source_points_ext)
+        target_points = scale_points_to_flow(target_points_ext).to(device=images.device, dtype=images.dtype)
+        valid_mask = valid_mask.to(device=images.device)
         timestep_indices = torch.randint(0, self.num_train_timesteps, (batch_size,), device=images.device)
-        schedule_timesteps = self.training_scheduler.timesteps.to(device=images.device, dtype=images.dtype)
-        timesteps = schedule_timesteps[timestep_indices]
-        noise = torch.randn_like(clean_points)
-        noisy_points = self.training_scheduler.scale_noise(clean_points, timesteps, noise=noise)
+        timesteps = timestep_indices.to(dtype=images.dtype)
+        tau = (timestep_indices.to(dtype=images.dtype) + 0.5) / float(self.num_train_timesteps)
+        tau = tau.view(batch_size, 1, 1)
+        noisy_points = (1.0 - tau) * source_points + tau * target_points
         image_cond = images
         cond_drop_mask = torch.zeros((batch_size,), dtype=torch.bool, device=images.device)
         if self.training and self.cond_drop_rate > 0.0:
@@ -200,11 +197,11 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         prediction = self.predict(noisy_points, timesteps, image_cond)
         return {
             'pred_velocity': prediction.sample,
-            'presence_logits': prediction.presence_logits,
-            'target_velocity': clean_points - noise,
-            'target_presence': valid_mask.to(dtype=clean_points.dtype),
+            'target_velocity': target_points - source_points,
+            'valid_mask': valid_mask.to(dtype=source_points.dtype),
             'timestep_indices': timestep_indices,
-            'clean_points': clean_points,
+            'source_points': source_points,
+            'target_points': target_points,
             'noisy_points': noisy_points,
             'pred_group_count': 1,
             'cond_drop_mask': cond_drop_mask,

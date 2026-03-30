@@ -1,6 +1,7 @@
 from typing import List, Sequence, Tuple
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 import torch
 
 
@@ -12,36 +13,43 @@ def scale_points_from_flow(points: torch.Tensor) -> torch.Tensor:
     return (points + 1.0) * 0.5
 
 
-def _sorted_indices(points: torch.Tensor) -> torch.Tensor:
-    if points.numel() == 0:
-        return torch.zeros((0,), dtype=torch.long, device=points.device)
-    points_np = points.detach().cpu().numpy()
-    order = np.lexsort((points_np[:, 1], points_np[:, 0]))
-    return torch.from_numpy(order.astype(np.int64)).to(device=points.device)
+def sample_uniform_points(
+    batch_size: int,
+    num_points: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    generator: torch.Generator = None,
+) -> torch.Tensor:
+    return torch.rand((batch_size, num_points, 2), device=device, dtype=dtype, generator=generator)
 
 
-def pad_endpoint_targets(targets: Sequence[dict], max_points: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def match_uniform_points_to_targets(
+    source_points: torch.Tensor,
+    targets: Sequence[dict],
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if not targets:
         raise ValueError('targets must be non-empty')
-    device = targets[0]['points'].device
-    batch_size = len(targets)
-    padded = torch.zeros((batch_size, max_points, 2), dtype=torch.float32, device=device)
-    valid_mask = torch.zeros((batch_size, max_points), dtype=torch.bool, device=device)
+    batch_size, num_points, _ = source_points.shape
+    aligned_targets = source_points.clone()
+    valid_mask = torch.zeros((batch_size, num_points), dtype=torch.bool, device=source_points.device)
     for batch_idx, target in enumerate(targets):
-        points = target['points'].to(device=device, dtype=torch.float32)
+        points = target['points'].to(device=source_points.device, dtype=source_points.dtype)
         if points.numel() == 0:
             continue
-        order = _sorted_indices(points)
-        points = points[order]
-        count = min(max_points, points.shape[0])
-        padded[batch_idx, :count] = points[:count]
-        valid_mask[batch_idx, :count] = True
-    return padded, valid_mask
+        cost = torch.cdist(source_points[batch_idx], points, p=1)
+        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
+        if len(row_ind) == 0:
+            continue
+        row_idx = torch.as_tensor(row_ind, dtype=torch.long, device=source_points.device)
+        col_idx = torch.as_tensor(col_ind, dtype=torch.long, device=source_points.device)
+        aligned_targets[batch_idx, row_idx] = points[col_idx]
+        valid_mask[batch_idx, row_idx] = True
+    return aligned_targets, valid_mask
 
 
-def select_predicted_points(points: torch.Tensor, presence_probs: torch.Tensor, threshold: float) -> List[torch.Tensor]:
+def select_predicted_points(points: torch.Tensor) -> List[torch.Tensor]:
     selected: List[torch.Tensor] = []
-    keep_mask = presence_probs > float(threshold)
     for batch_idx in range(points.shape[0]):
-        selected.append(points[batch_idx, keep_mask[batch_idx]])
+        selected.append(points[batch_idx])
     return selected

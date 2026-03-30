@@ -7,11 +7,6 @@ import torch
 from misc_utils.visualization_utils import render_point_grid
 from models.pipelines.endpoint_flow_pipeline import EndpointFlowPipeline
 
-try:
-    from diffusers import FlowMatchEulerDiscreteScheduler
-except ImportError as exc:  # pragma: no cover - exercised on cluster env
-    raise ImportError('diffusers is required for EndpointFlowVisualizer.') from exc
-
 
 class EndpointFlowVisualizer(pl.Callback):
     def __init__(
@@ -19,13 +14,11 @@ class EndpointFlowVisualizer(pl.Callback):
         val_every_n_epochs: int = 1,
         inference_steps: int = 20,
         guidance_scales: Sequence[float] = (1.0, 3.0, 5.0, 7.0),
-        presence_threshold: float = 0.5,
     ) -> None:
         super().__init__()
         self.val_every_n_epochs = int(val_every_n_epochs)
         self.inference_steps = int(inference_steps)
         self.guidance_scales = tuple(float(scale) for scale in guidance_scales)
-        self.presence_threshold = float(presence_threshold)
 
     @staticmethod
     def _wandb_log_image(trainer, key: str, image_path: Path, caption: str, global_step: int, epoch: int) -> None:
@@ -48,11 +41,7 @@ class EndpointFlowVisualizer(pl.Callback):
             })
 
     def _build_pipeline(self, pl_module) -> EndpointFlowPipeline:
-        scheduler = FlowMatchEulerDiscreteScheduler(
-            num_train_timesteps=int(pl_module.config['model'].get('num_train_timesteps', 1000)),
-            shift=float(pl_module.config['model'].get('scheduler_shift', 1.0)),
-        )
-        pipeline = EndpointFlowPipeline(model=pl_module.model, scheduler=scheduler)
+        pipeline = EndpointFlowPipeline(model=pl_module.model)
         pipeline = pipeline.to(device=pl_module.device)
         return pipeline
 
@@ -93,7 +82,6 @@ class EndpointFlowVisualizer(pl.Callback):
                     batch['images'].to(pl_module.device),
                     num_inference_steps=self.inference_steps,
                     guidance_scale=guidance_scale,
-                    presence_threshold=self.presence_threshold,
                 )
                 self._render_one(
                     trainer,

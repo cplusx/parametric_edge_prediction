@@ -74,11 +74,9 @@ model:
   gradient_checkpointing: true
   cond_drop_rate: 0.1
   num_train_timesteps: 1000
-  scheduler_shift: 1.0
 
 loss:
   velocity_weight: 1.0
-  presence_weight: 1.0
 
 optimizer:
   lr: 0.00005
@@ -94,7 +92,7 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-flowmatch-r50-{devices}gpu-p300-eb256-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p300-eb256-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: auto
@@ -115,7 +113,6 @@ trainer:
 
 callbacks:
   visualization_every_n_epochs: 1
-  visualization_score_threshold: 0.5
   visualization_max_points: 300
   visualization_inference_steps: 20
   visualization_guidance_scales: [1.0, 3.0, 5.0, 7.0]
@@ -126,19 +123,19 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-endpoint-flowmatch-r50-{devices}gpu-p300-eb256-lr5e5-fp32
-    group: laion-endpoint-flowmatch
+    name: laion-endpoint-uniformflow-r50-{devices}gpu-p300-eb256-lr5e5-fp32
+    group: laion-endpoint-uniformflow
     job_type: train
     tags:
       - laion
       - cluster
       - "{devices}gpu"
       - endpoint
-      - flow-matching
+      - uniform-flow-matching
       - diffusers
       - r50
       - p300
       - effective-batch-256
       - lr5e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-flowmatch-r50-{devices}gpu-p300-eb256-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p300-eb256-lr5e5-fp32/wandb

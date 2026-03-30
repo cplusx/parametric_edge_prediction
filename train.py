@@ -193,7 +193,6 @@ def main() -> None:
             val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
             inference_steps=int(config['callbacks'].get('visualization_inference_steps', 20)),
             guidance_scales=tuple(config['callbacks'].get('visualization_guidance_scales', [1.0, 3.0, 5.0, 7.0])),
-            presence_threshold=float(config['callbacks'].get('visualization_score_threshold', 0.5)),
         )
     else:
         visualizer = ParametricEdgeVisualizer(
