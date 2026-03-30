@@ -96,6 +96,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         backbone_config = {
             'model': {
                 'input_channels': int(input_channels),
+                'hidden_dim': self.hidden_dim,
                 'dab_backbone_name': str(dab_backbone_name),
                 'dab_backbone_pretrained': bool(dab_backbone_pretrained),
                 'dab_backbone_dilation': bool(dab_backbone_dilation),
