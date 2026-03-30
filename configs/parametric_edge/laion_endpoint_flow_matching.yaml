@@ -74,9 +74,10 @@ model:
   gradient_checkpointing: true
   cond_drop_rate: 0.1
   num_train_timesteps: 1000
-  curriculum_start_points: 100
-  curriculum_max_points: 200
+  curriculum_start_points: 150
+  curriculum_max_points: 250
   curriculum_points_per_epoch: 10
+  curriculum_random_retries: 4
 
 loss:
   velocity_weight: 1.0
@@ -95,7 +96,7 @@ optimizer:
   min_lr_ratio: 0.01
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p200-eb256-lr5e5-fp32
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p250-eb256-lr5e5-fp32
   max_epochs: 200
   accelerator: gpu
   devices: auto
@@ -127,7 +128,7 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-endpoint-uniformflow-r50-{devices}gpu-p200-eb256-lr5e5-fp32
+    name: laion-endpoint-uniformflow-r50-{devices}gpu-p250-eb256-lr5e5-fp32
     group: laion-endpoint-uniformflow
     job_type: train
     tags:
@@ -138,8 +139,9 @@ logging:
       - uniform-flow-matching
       - diffusers
       - r50
-      - p200
+      - p250
+      - curriculum-150-250
       - effective-batch-256
       - lr5e-5
       - fp32
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p200-eb256-lr5e5-fp32/wandb
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-endpoint-uniformflow-r50-{devices}gpu-p250-eb256-lr5e5-fp32/wandb
