@@ -77,10 +77,12 @@ class EndpointFlowVisualizer(pl.Callback):
         pl_module.eval()
         pipeline = self._build_pipeline(pl_module)
         with torch.no_grad():
+            batch_max_points = max(max(int(target['points'].shape[0]), 1) for target in batch['targets'])
             for guidance_scale in self.guidance_scales:
                 result = pipeline(
                     batch['images'].to(pl_module.device),
                     num_inference_steps=self.inference_steps,
+                    num_points=batch_max_points,
                     guidance_scale=guidance_scale,
                 )
                 self._render_one(

@@ -101,6 +101,9 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         cond_drop_rate: float = 0.1,
         num_train_timesteps: int = 1000,
         scheduler_shift: float = 1.0,
+        curriculum_start_points: int = 100,
+        curriculum_max_points: int = 200,
+        curriculum_points_per_epoch: int = 10,
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
@@ -108,6 +111,9 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         self.num_train_timesteps = int(num_train_timesteps)
         self.cond_drop_rate = float(cond_drop_rate)
         self.gradient_checkpointing = bool(gradient_checkpointing)
+        self.curriculum_start_points = int(curriculum_start_points)
+        self.curriculum_max_points = int(curriculum_max_points)
+        self.curriculum_points_per_epoch = int(curriculum_points_per_epoch)
 
         backbone_config = {
             'model': {
@@ -155,6 +161,10 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
+
+    def _current_curriculum_cap(self) -> int:
+        cap = self.curriculum_start_points + self.current_epoch * self.curriculum_points_per_epoch
+        return max(1, min(int(cap), self.curriculum_max_points))
 
     def _encode_image(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         src, mask, pos = self.backbone(images)
@@ -205,11 +215,26 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
     def forward(self, images: torch.Tensor, targets=None) -> Dict[str, torch.Tensor]:
         if targets is None:
             raise ValueError('EndpointFlowMatchingModel.forward requires targets for training/validation. Use the pipeline for inference.')
+        original_batch_size = images.shape[0]
+        point_counts = [max(0, int(target['points'].shape[0])) for target in targets]
+        curriculum_cap = self._current_curriculum_cap()
+        kept_indices = list(range(len(targets)))
+        if self.training:
+            kept_indices = [idx for idx, count in enumerate(point_counts) if count <= curriculum_cap]
+            if not kept_indices:
+                zero = images.sum() * 0.0
+                return {
+                    'skip_batch': True,
+                    'loss_main_proxy': zero,
+                    'pred_group_count': 1,
+                    'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
+                    'kept_samples': torch.tensor(0.0, device=images.device),
+                    'skipped_samples': torch.tensor(float(len(targets)), device=images.device),
+                }
+            images = images[kept_indices]
+            targets = [targets[idx] for idx in kept_indices]
+            point_counts = [point_counts[idx] for idx in kept_indices]
         batch_size = images.shape[0]
-        point_counts = [
-            max(0, min(int(target['points'].shape[0]), self.num_points))
-            for target in targets
-        ]
         active_points = max(max(point_counts), 1)
         source_points_ext = sample_uniform_points(
             batch_size,
@@ -246,4 +271,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             'noisy_points': noisy_points,
             'pred_group_count': 1,
             'cond_drop_mask': cond_drop_mask,
+            'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
+            'kept_samples': torch.tensor(float(batch_size), device=images.device),
+            'skipped_samples': torch.tensor(float(original_batch_size - batch_size), device=images.device),
         }
