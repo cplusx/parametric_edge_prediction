@@ -16,6 +16,8 @@ from misc_utils.bezier_target_utils import (
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
+_CURRICULUM_MAX_ATTEMPTS = 64
+
 
 def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_path: str, input_path: str) -> Dict:
     image_chw = np.transpose(target_data['image_hwc'], (2, 0, 1))
@@ -79,7 +81,6 @@ class ParametricEndpointDataset(Dataset):
         self.curriculum_start_points = 0
         self.curriculum_max_points = 0
         self.curriculum_points_per_epoch = 0
-        self.curriculum_random_retries = 4
         self.current_epoch = 0
 
     def __len__(self) -> int:
@@ -92,13 +93,11 @@ class ParametricEndpointDataset(Dataset):
         start_points: int,
         max_points: int,
         points_per_epoch: int,
-        random_retries: int = 4,
     ) -> None:
         self.curriculum_enabled = bool(enabled)
         self.curriculum_start_points = int(start_points)
         self.curriculum_max_points = int(max_points)
         self.curriculum_points_per_epoch = int(points_per_epoch)
-        self.curriculum_random_retries = max(0, int(random_retries))
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
@@ -162,14 +161,11 @@ class ParametricEndpointDataset(Dataset):
         cap = self._current_curriculum_cap()
         dataset_len = len(self.edge_paths)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
-        candidate_indices = [index]
-        if dataset_len > 1 and self.curriculum_random_retries > 0:
-            all_indices = np.arange(dataset_len, dtype=np.int64)
-            remaining = all_indices[all_indices != index]
-            sample_count = min(self.curriculum_random_retries, int(remaining.shape[0]))
-            if sample_count > 0:
-                candidate_indices.extend(rng.choice(remaining, size=sample_count, replace=False).tolist())
-        for attempt, candidate_index in enumerate(candidate_indices):
+        attempt = 0
+        candidate_index = int(index)
+        best_item = None
+        best_excess = None
+        while attempt < _CURRICULUM_MAX_ATTEMPTS:
             item = self._build_item(candidate_index)
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
@@ -177,7 +173,18 @@ class ParametricEndpointDataset(Dataset):
                 item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if attempt == 0 else 1.0, dtype=torch.float32)
                 item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
                 return item
-        raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in ParametricEndpointDataset.')
+            excess = abs(point_count - cap)
+            if best_item is None or best_excess is None or excess < best_excess:
+                best_item = item
+                best_excess = excess
+            attempt += 1
+            candidate_index = int(rng.integers(0, dataset_len))
+        if best_item is None:
+            best_item = self._build_item(index)
+        best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
+        return best_item
 
 
 class LaionSyntheticEndpointDataset(Dataset):
@@ -208,7 +215,6 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.curriculum_start_points = 0
         self.curriculum_max_points = 0
         self.curriculum_points_per_epoch = 0
-        self.curriculum_random_retries = 4
         self.current_epoch = 0
 
     def __len__(self) -> int:
@@ -221,13 +227,11 @@ class LaionSyntheticEndpointDataset(Dataset):
         start_points: int,
         max_points: int,
         points_per_epoch: int,
-        random_retries: int = 4,
     ) -> None:
         self.curriculum_enabled = bool(enabled)
         self.curriculum_start_points = int(start_points)
         self.curriculum_max_points = int(max_points)
         self.curriculum_points_per_epoch = int(points_per_epoch)
-        self.curriculum_random_retries = max(0, int(random_retries))
 
     def set_epoch(self, epoch: int) -> None:
         self.current_epoch = int(epoch)
@@ -290,14 +294,11 @@ class LaionSyntheticEndpointDataset(Dataset):
         cap = self._current_curriculum_cap()
         dataset_len = len(self.sample_records)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
-        candidate_indices = [index]
-        if dataset_len > 1 and self.curriculum_random_retries > 0:
-            all_indices = np.arange(dataset_len, dtype=np.int64)
-            remaining = all_indices[all_indices != index]
-            sample_count = min(self.curriculum_random_retries, int(remaining.shape[0]))
-            if sample_count > 0:
-                candidate_indices.extend(rng.choice(remaining, size=sample_count, replace=False).tolist())
-        for attempt, candidate_index in enumerate(candidate_indices):
+        attempt = 0
+        candidate_index = int(index)
+        best_item = None
+        best_excess = None
+        while attempt < _CURRICULUM_MAX_ATTEMPTS:
             item = self._build_item(candidate_index)
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
@@ -305,7 +306,18 @@ class LaionSyntheticEndpointDataset(Dataset):
                 item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if attempt == 0 else 1.0, dtype=torch.float32)
                 item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
                 return item
-        raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in LaionSyntheticEndpointDataset.')
+            excess = abs(point_count - cap)
+            if best_item is None or best_excess is None or excess < best_excess:
+                best_item = item
+                best_excess = excess
+            attempt += 1
+            candidate_index = int(rng.integers(0, dataset_len))
+        if best_item is None:
+            best_item = self._build_item(index)
+        best_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        best_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        best_item['target']['curriculum_rejected_candidates'] = torch.tensor(float(attempt), dtype=torch.float32)
+        return best_item
 
 
 def endpoint_detection_collate(batch: List[Dict]) -> Dict:
