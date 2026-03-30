@@ -1,9 +1,5 @@
-import hashlib
-import json
-import os
 from pathlib import Path
-import time
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import torch
@@ -19,53 +15,6 @@ from misc_utils.bezier_target_utils import (
     unpack_polylines,
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
-from misc_utils.endpoint_target_utils import polylines_to_unique_endpoint_count
-
-
-def _counts_cache_path(
-    cache_root: Path,
-    *,
-    dataset_kind: str,
-    identifiers: Sequence[str],
-    dedupe_distance_px: float,
-) -> Path:
-    digest = hashlib.sha1()
-    digest.update(dataset_kind.encode('utf-8'))
-    digest.update(f'{float(dedupe_distance_px):.4f}'.encode('utf-8'))
-    for identifier in identifiers:
-        digest.update(identifier.encode('utf-8'))
-        digest.update(b'\0')
-    return Path(cache_root) / 'endpoint_curriculum_counts' / f'{dataset_kind}_{digest.hexdigest()}.json'
-
-
-def _load_or_compute_counts(cache_path: Path, compute_fn: Callable[[], List[int]]) -> List[int]:
-    cache_path = Path(cache_path)
-    if cache_path.exists():
-        return [int(value) for value in json.loads(cache_path.read_text())]
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = cache_path.with_suffix(cache_path.suffix + '.lock')
-    try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        for _ in range(7200):
-            if cache_path.exists():
-                return [int(value) for value in json.loads(cache_path.read_text())]
-            time.sleep(1.0)
-        raise TimeoutError(f'Timed out waiting for curriculum counts cache: {cache_path}')
-
-    os.close(lock_fd)
-    try:
-        counts = [int(value) for value in compute_fn()]
-        tmp_path = cache_path.with_suffix(cache_path.suffix + '.tmp')
-        tmp_path.write_text(json.dumps(counts))
-        os.replace(tmp_path, cache_path)
-        return counts
-    finally:
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_path: str, input_path: str) -> Dict:
@@ -123,18 +72,31 @@ class ParametricEndpointDataset(Dataset):
         self.train_augment = bool(train_augment)
         self.augment_cfg = dict(augment_cfg or {})
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
-        self._curriculum_counts: Optional[List[int]] = None
-        self._curriculum_cache_path = _counts_cache_path(
-            self.cache_root,
-            dataset_kind='parametric_endpoint',
-            identifiers=[str(path.resolve()) for path in self.edge_paths],
-            dedupe_distance_px=self.endpoint_dedupe_distance_px,
-        )
+        self.curriculum_enabled = False
+        self.curriculum_start_points = 0
+        self.curriculum_max_points = 0
+        self.curriculum_points_per_epoch = 0
+        self.current_epoch = 0
 
     def __len__(self) -> int:
         return len(self.edge_paths)
 
-    def __getitem__(self, index: int) -> Dict:
+    def configure_curriculum(self, *, enabled: bool, start_points: int, max_points: int, points_per_epoch: int) -> None:
+        self.curriculum_enabled = bool(enabled)
+        self.curriculum_start_points = int(start_points)
+        self.curriculum_max_points = int(max_points)
+        self.curriculum_points_per_epoch = int(points_per_epoch)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.current_epoch = int(epoch)
+
+    def _current_curriculum_cap(self) -> int:
+        if not self.curriculum_enabled:
+            return int(1e9)
+        cap = self.curriculum_start_points + self.current_epoch * self.curriculum_points_per_epoch
+        return max(1, min(int(cap), self.curriculum_max_points))
+
+    def _build_item(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
         cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
         graph_data = load_cached_graph(cache_path)
@@ -178,25 +140,18 @@ class ParametricEndpointDataset(Dataset):
             input_path=str(image_path),
         )
 
-    def get_curriculum_counts(self) -> List[int]:
-        if self._curriculum_counts is not None:
-            return list(self._curriculum_counts)
-        def compute_counts() -> List[int]:
-            counts: List[int] = []
-            for edge_path in self.edge_paths:
-                cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
-                graph_data = load_cached_graph(cache_path)
-                polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-                counts.append(
-                    polylines_to_unique_endpoint_count(
-                        polylines,
-                        dedupe_distance_px=self.endpoint_dedupe_distance_px,
-                    )
-                )
-            return counts
-
-        self._curriculum_counts = _load_or_compute_counts(self._curriculum_cache_path, compute_counts)
-        return list(self._curriculum_counts)
+    def __getitem__(self, index: int) -> Dict:
+        if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
+            return self._build_item(index)
+        cap = self._current_curriculum_cap()
+        dataset_len = len(self.edge_paths)
+        for offset in range(dataset_len):
+            candidate_index = (index + offset) % dataset_len
+            item = self._build_item(candidate_index)
+            point_count = int(item['target']['points'].shape[0])
+            if 0 < point_count <= cap:
+                return item
+        raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in ParametricEndpointDataset.')
 
 
 class LaionSyntheticEndpointDataset(Dataset):
@@ -212,7 +167,6 @@ class LaionSyntheticEndpointDataset(Dataset):
         augment_cfg: Optional[Dict],
         rgb_input: bool,
         endpoint_dedupe_distance_px: float = 2.0,
-        curriculum_cache_root: Optional[Path] = None,
     ) -> None:
         self.sample_records = list(sample_records)
         self.image_size = int(image_size)
@@ -224,20 +178,31 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.augment_cfg = dict(augment_cfg or {})
         self.rgb_input = bool(rgb_input)
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
-        self._curriculum_counts: Optional[List[int]] = None
-        cache_root = Path(curriculum_cache_root) if curriculum_cache_root is not None else Path(sample_records[0]['cache_path']).parent
-        identifiers = [str(Path(record['cache_path']).resolve()) for record in self.sample_records]
-        self._curriculum_cache_path = _counts_cache_path(
-            cache_root,
-            dataset_kind='laion_endpoint',
-            identifiers=identifiers,
-            dedupe_distance_px=self.endpoint_dedupe_distance_px,
-        )
+        self.curriculum_enabled = False
+        self.curriculum_start_points = 0
+        self.curriculum_max_points = 0
+        self.curriculum_points_per_epoch = 0
+        self.current_epoch = 0
 
     def __len__(self) -> int:
         return len(self.sample_records)
 
-    def __getitem__(self, index: int) -> Dict:
+    def configure_curriculum(self, *, enabled: bool, start_points: int, max_points: int, points_per_epoch: int) -> None:
+        self.curriculum_enabled = bool(enabled)
+        self.curriculum_start_points = int(start_points)
+        self.curriculum_max_points = int(max_points)
+        self.curriculum_points_per_epoch = int(points_per_epoch)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.current_epoch = int(epoch)
+
+    def _current_curriculum_cap(self) -> int:
+        if not self.curriculum_enabled:
+            return int(1e9)
+        cap = self.curriculum_start_points + self.current_epoch * self.curriculum_points_per_epoch
+        return max(1, min(int(cap), self.curriculum_max_points))
+
+    def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
         graph_data = load_cached_graph(Path(record['cache_path']))
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
@@ -280,24 +245,18 @@ class LaionSyntheticEndpointDataset(Dataset):
             input_path=str(record['image_path']),
         )
 
-    def get_curriculum_counts(self) -> List[int]:
-        if self._curriculum_counts is not None:
-            return list(self._curriculum_counts)
-        def compute_counts() -> List[int]:
-            counts: List[int] = []
-            for record in self.sample_records:
-                graph_data = load_cached_graph(Path(record['cache_path']))
-                polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-                counts.append(
-                    polylines_to_unique_endpoint_count(
-                        polylines,
-                        dedupe_distance_px=self.endpoint_dedupe_distance_px,
-                    )
-                )
-            return counts
-
-        self._curriculum_counts = _load_or_compute_counts(self._curriculum_cache_path, compute_counts)
-        return list(self._curriculum_counts)
+    def __getitem__(self, index: int) -> Dict:
+        if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
+            return self._build_item(index)
+        cap = self._current_curriculum_cap()
+        dataset_len = len(self.sample_records)
+        for offset in range(dataset_len):
+            candidate_index = (index + offset) % dataset_len
+            item = self._build_item(candidate_index)
+            point_count = int(item['target']['points'].shape[0])
+            if 0 < point_count <= cap:
+                return item
+        raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in LaionSyntheticEndpointDataset.')
 
 
 def endpoint_detection_collate(batch: List[Dict]) -> Dict:
