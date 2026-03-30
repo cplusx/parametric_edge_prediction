@@ -4,8 +4,8 @@ data:
   include_primary_train_dataset: false
   rgb_input: true
   image_size: 256
-  batch_size: 16
-  val_batch_size: 8
+  batch_size: 64
+  val_batch_size: 16
   num_workers: 16
   pin_memory: true
   persistent_workers: true

@@ -224,6 +224,18 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         curriculum_cap = self._current_curriculum_cap()
         batch_size = images.shape[0]
         active_points = max(max(point_counts), 1)
+        direct_accepts = torch.stack([
+            target.get('curriculum_direct_accept', torch.tensor(1.0)).to(device=images.device, dtype=images.dtype)
+            for target in targets
+        ]).sum()
+        redirected_requests = torch.stack([
+            target.get('curriculum_redirected_request', torch.tensor(0.0)).to(device=images.device, dtype=images.dtype)
+            for target in targets
+        ]).sum()
+        rejected_candidates = torch.stack([
+            target.get('curriculum_rejected_candidates', torch.tensor(0.0)).to(device=images.device, dtype=images.dtype)
+            for target in targets
+        ]).sum()
         source_points_ext = sample_uniform_points(
             batch_size,
             active_points,
@@ -262,4 +274,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
             'kept_samples': torch.tensor(float(batch_size), device=images.device),
             'skipped_samples': torch.tensor(0.0, device=images.device),
+            'curriculum_direct_accepts': direct_accepts,
+            'curriculum_redirected_requests': redirected_requests,
+            'curriculum_rejected_candidates': rejected_candidates,
         }

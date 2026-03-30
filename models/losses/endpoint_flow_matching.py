@@ -30,6 +30,9 @@ class EndpointFlowMatchingLossComputer:
                 'curriculum_cap': outputs['curriculum_cap'].detach(),
                 'kept_samples': outputs['kept_samples'].detach(),
                 'skipped_samples': outputs['skipped_samples'].detach(),
+                'curriculum_direct_accepts': outputs.get('curriculum_direct_accepts', zero).detach(),
+                'curriculum_redirected_requests': outputs.get('curriculum_redirected_requests', zero).detach(),
+                'curriculum_rejected_candidates': outputs.get('curriculum_rejected_candidates', zero).detach(),
             }
             for start, end in _BUCKETS:
                 key = f'loss_bucket_{start:03d}_{end:04d}'
@@ -50,6 +53,9 @@ class EndpointFlowMatchingLossComputer:
             'curriculum_cap': outputs['curriculum_cap'].detach(),
             'kept_samples': outputs['kept_samples'].detach(),
             'skipped_samples': outputs['skipped_samples'].detach(),
+            'curriculum_direct_accepts': outputs.get('curriculum_direct_accepts', total.detach() * 0.0).detach(),
+            'curriculum_redirected_requests': outputs.get('curriculum_redirected_requests', total.detach() * 0.0).detach(),
+            'curriculum_rejected_candidates': outputs.get('curriculum_rejected_candidates', total.detach() * 0.0).detach(),
         }
         step_indices = outputs['timestep_indices']
         for start, end in _BUCKETS:

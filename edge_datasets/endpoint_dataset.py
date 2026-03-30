@@ -38,6 +38,9 @@ def _endpoint_target_from_curve_target(target_data: Dict, sample_id: str, edge_p
             'sample_id': sample_id,
             'edge_path': edge_path,
             'input_path': input_path,
+            'curriculum_direct_accept': torch.tensor(1.0, dtype=torch.float32),
+            'curriculum_redirected_request': torch.tensor(0.0, dtype=torch.float32),
+            'curriculum_rejected_candidates': torch.tensor(0.0, dtype=torch.float32),
         },
     }
 
@@ -153,6 +156,9 @@ class ParametricEndpointDataset(Dataset):
             item = self._build_item(candidate_index)
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
+                item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if offset == 0 else 0.0, dtype=torch.float32)
+                item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if offset == 0 else 1.0, dtype=torch.float32)
+                item['target']['curriculum_rejected_candidates'] = torch.tensor(float(offset), dtype=torch.float32)
                 return item
         raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in ParametricEndpointDataset.')
 
@@ -261,6 +267,9 @@ class LaionSyntheticEndpointDataset(Dataset):
             item = self._build_item(candidate_index)
             point_count = int(item['target']['points'].shape[0])
             if 0 < point_count <= cap:
+                item['target']['curriculum_direct_accept'] = torch.tensor(1.0 if offset == 0 else 0.0, dtype=torch.float32)
+                item['target']['curriculum_redirected_request'] = torch.tensor(0.0 if offset == 0 else 1.0, dtype=torch.float32)
+                item['target']['curriculum_rejected_candidates'] = torch.tensor(float(offset), dtype=torch.float32)
                 return item
         raise RuntimeError(f'No training sample satisfied endpoint curriculum cap={cap} in LaionSyntheticEndpointDataset.')
 
