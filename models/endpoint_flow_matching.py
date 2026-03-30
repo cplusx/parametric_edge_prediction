@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from misc_utils.endpoint_flow_utils import match_uniform_points_to_targets, sample_uniform_points, scale_points_to_flow
+from misc_utils.endpoint_flow_utils import build_uniform_flow_batch, sample_uniform_points, scale_points_to_flow
 from models.dab_curve_detr import DABEncoder, DABResNetBackbone
 
 try:
@@ -40,10 +40,24 @@ class EndpointFlowDecoderLayer(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x: torch.Tensor, memory: torch.Tensor, memory_key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        memory: torch.Tensor,
+        memory_key_padding_mask: Optional[torch.Tensor],
+        query_padding_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
         residual = x
         x_norm = self.self_norm(x)
-        x = residual + self.self_attn(x_norm, x_norm, x_norm, need_weights=False)[0]
+        x = residual + self.self_attn(
+            x_norm,
+            x_norm,
+            x_norm,
+            key_padding_mask=query_padding_mask,
+            need_weights=False,
+        )[0]
+        if query_padding_mask is not None:
+            x = x.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
 
         residual = x
         x_norm = self.cross_norm(x)
@@ -54,10 +68,14 @@ class EndpointFlowDecoderLayer(nn.Module):
             key_padding_mask=memory_key_padding_mask,
             need_weights=False,
         )[0]
+        if query_padding_mask is not None:
+            x = x.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
 
         residual = x
         x_norm = self.ffn_norm(x)
         x = residual + self.ffn(x_norm)
+        if query_padding_mask is not None:
+            x = x.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
         return x
 
 
@@ -148,15 +166,27 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         memory = self.encoder(src_flat, pos=pos_flat, key_padding_mask=mask_flat)
         return memory, mask_flat
 
-    def _decode(self, hidden: torch.Tensor, memory: torch.Tensor, memory_key_padding_mask: torch.Tensor) -> torch.Tensor:
+    def _decode(
+        self,
+        hidden: torch.Tensor,
+        memory: torch.Tensor,
+        memory_key_padding_mask: torch.Tensor,
+        query_padding_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
         for layer in self.decoder_layers:
             if self.gradient_checkpointing and self.training:
-                hidden = checkpoint(layer, hidden, memory, memory_key_padding_mask, use_reentrant=False)
+                hidden = checkpoint(layer, hidden, memory, memory_key_padding_mask, query_padding_mask, use_reentrant=False)
             else:
-                hidden = layer(hidden, memory, memory_key_padding_mask)
+                hidden = layer(hidden, memory, memory_key_padding_mask, query_padding_mask)
         return self.final_norm(hidden)
 
-    def predict(self, sample: torch.Tensor, timestep: torch.Tensor, image_cond: torch.Tensor) -> EndpointFlowMatchingOutput:
+    def predict(
+        self,
+        sample: torch.Tensor,
+        timestep: torch.Tensor,
+        image_cond: torch.Tensor,
+        query_padding_mask: Optional[torch.Tensor] = None,
+    ) -> EndpointFlowMatchingOutput:
         memory, memory_key_padding_mask = self._encode_image(image_cond)
         timestep = timestep.to(device=sample.device)
         if timestep.ndim == 0:
@@ -164,24 +194,34 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         timestep_proj = self.time_proj(timestep)
         timestep_emb = self.time_embed(timestep_proj.to(dtype=sample.dtype)).unsqueeze(1)
         hidden = self.point_proj(sample) + timestep_emb
-        hidden = self._decode(hidden, memory, memory_key_padding_mask)
+        if query_padding_mask is not None:
+            hidden = hidden.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
+        hidden = self._decode(hidden, memory, memory_key_padding_mask, query_padding_mask)
         velocity = self.velocity_head(hidden)
+        if query_padding_mask is not None:
+            velocity = velocity.masked_fill(query_padding_mask.unsqueeze(-1), 0.0)
         return EndpointFlowMatchingOutput(sample=velocity)
 
     def forward(self, images: torch.Tensor, targets=None) -> Dict[str, torch.Tensor]:
         if targets is None:
             raise ValueError('EndpointFlowMatchingModel.forward requires targets for training/validation. Use the pipeline for inference.')
         batch_size = images.shape[0]
+        point_counts = [
+            max(0, min(int(target['points'].shape[0]), self.num_points))
+            for target in targets
+        ]
+        active_points = max(max(point_counts), 1)
         source_points_ext = sample_uniform_points(
             batch_size,
-            self.num_points,
+            active_points,
             device=images.device,
             dtype=images.dtype,
         )
-        target_points_ext, valid_mask = match_uniform_points_to_targets(source_points_ext, targets)
+        source_points_ext, target_points_ext, valid_mask = build_uniform_flow_batch(source_points_ext, targets)
         source_points = scale_points_to_flow(source_points_ext)
         target_points = scale_points_to_flow(target_points_ext).to(device=images.device, dtype=images.dtype)
         valid_mask = valid_mask.to(device=images.device)
+        query_padding_mask = ~valid_mask
         timestep_indices = torch.randint(0, self.num_train_timesteps, (batch_size,), device=images.device)
         timesteps = timestep_indices.to(dtype=images.dtype)
         tau = (timestep_indices.to(dtype=images.dtype) + 0.5) / float(self.num_train_timesteps)
@@ -194,11 +234,12 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             if cond_drop_mask.any():
                 image_cond = images.clone()
                 image_cond[cond_drop_mask] = 0.0
-        prediction = self.predict(noisy_points, timesteps, image_cond)
+        prediction = self.predict(noisy_points, timesteps, image_cond, query_padding_mask=query_padding_mask)
         return {
             'pred_velocity': prediction.sample,
             'target_velocity': target_points - source_points,
             'valid_mask': valid_mask.to(dtype=source_points.dtype),
+            'query_padding_mask': query_padding_mask,
             'timestep_indices': timestep_indices,
             'source_points': source_points,
             'target_points': target_points,

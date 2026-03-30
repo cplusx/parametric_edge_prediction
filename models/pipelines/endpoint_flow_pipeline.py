@@ -34,15 +34,17 @@ class EndpointFlowPipeline(DiffusionPipeline):
         images: torch.Tensor,
         *,
         num_inference_steps: int = 20,
+        num_points: Optional[int] = None,
         guidance_scale: float = 1.0,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
     ) -> EndpointFlowPipelineOutput:
         device = images.device
         batch_size = images.shape[0]
+        active_points = int(num_points or self.model.num_points)
         source_points_ext = sample_uniform_points(
             batch_size,
-            self.model.num_points,
+            active_points,
             device=device,
             dtype=images.dtype,
             generator=generator,

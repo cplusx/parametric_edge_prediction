@@ -1,4 +1,4 @@
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -19,15 +19,15 @@ def sample_uniform_points(
     *,
     device: torch.device,
     dtype: torch.dtype,
-    generator: torch.Generator = None,
+    generator: Optional[torch.Generator] = None,
 ) -> torch.Tensor:
     return torch.rand((batch_size, num_points, 2), device=device, dtype=dtype, generator=generator)
 
 
-def match_uniform_points_to_targets(
+def build_uniform_flow_batch(
     source_points: torch.Tensor,
     targets: Sequence[dict],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if not targets:
         raise ValueError('targets must be non-empty')
     batch_size, num_points, _ = source_points.shape
@@ -37,15 +37,17 @@ def match_uniform_points_to_targets(
         points = target['points'].to(device=source_points.device, dtype=source_points.dtype)
         if points.numel() == 0:
             continue
-        cost = torch.cdist(source_points[batch_idx], points, p=1)
+        count = min(int(points.shape[0]), num_points)
+        points = points[:count]
+        cost = torch.cdist(source_points[batch_idx, :count], points, p=1)
         row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
         if len(row_ind) == 0:
             continue
         row_idx = torch.as_tensor(row_ind, dtype=torch.long, device=source_points.device)
         col_idx = torch.as_tensor(col_ind, dtype=torch.long, device=source_points.device)
         aligned_targets[batch_idx, row_idx] = points[col_idx]
-        valid_mask[batch_idx, row_idx] = True
-    return aligned_targets, valid_mask
+        valid_mask[batch_idx, :count] = True
+    return source_points, aligned_targets, valid_mask
 
 
 def select_predicted_points(points: torch.Tensor) -> List[torch.Tensor]:
