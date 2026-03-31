@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import Dataset
 
 from edge_datasets.graph_pipeline import prepare_eval_curve_sample_with_mask, prepare_training_curve_sample_with_mask
-from misc_utils.bezier_target_utils import ensure_target_cache, load_binary_edge_annotation, load_cached_targets, load_image_array_original
+from misc_utils.bezier_target_utils import ensure_target_cache, load_binary_edge_annotation, load_cached_targets, load_image_array_original, target_cache_path
 
 SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 LAION_ENTRY_CACHE_PROBE_COUNT = 32
@@ -80,12 +80,18 @@ def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
             batch_name, image_id, image_path_str, edge_path_str = fields[:4]
             image_path = Path(image_path_str)
             edge_path = Path(edge_path_str)
-            records.append({
+            record = {
                 'batch_name': batch_name,
                 'image_id': image_id,
                 'image_path': image_path,
                 'edge_path': edge_path,
-            })
+            }
+            if len(fields) >= 5 and fields[4]:
+                record['bezier_cache_path'] = Path(fields[4])
+            else:
+                default_cache_root = cache_path.parent / 'laion_edge_v2_bezier_cache_fast'
+                record['bezier_cache_path'] = target_cache_path(edge_path=edge_path, cache_root=default_cache_root)
+            records.append(record)
     probe_result = _probe_laion_sample_records(records, probe_count=LAION_ENTRY_CACHE_PROBE_COUNT)
     if not probe_result['valid_indices']:
         return []
@@ -102,12 +108,17 @@ def _write_laion_entry_cache(cache_path: Path, records: Sequence[Dict[str, Path]
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open('w', encoding='utf-8') as handle:
         for record in records:
+            bezier_cache_path = Path(record['bezier_cache_path']) if 'bezier_cache_path' in record else target_cache_path(
+                edge_path=Path(record['edge_path']),
+                cache_root=cache_path.parent / 'laion_edge_v2_bezier_cache_fast',
+            )
             handle.write(
                 '\t'.join([
                     str(record['batch_name']),
                     str(record['image_id']),
                     str(record['image_path']),
                     str(record['edge_path']),
+                    str(bezier_cache_path),
                 ])
             )
             handle.write('\n')
@@ -205,6 +216,7 @@ def discover_laion_synthetic_samples(
                 'image_id': image_id,
                 'image_path': image_path,
                 'edge_path': edge_path,
+                'bezier_cache_path': target_cache_path(edge_path=edge_path, cache_root=cache_root),
             })
     if records:
         _write_laion_entry_cache(entry_cache_path, records)
@@ -331,13 +343,15 @@ class LaionSyntheticEdgeDataset(Dataset):
         if cached is not None:
             return cached
         record = self.sample_records[index]
-        cache_path = ensure_target_cache(
-            edge_path=Path(record['edge_path']),
-            cache_root=self.cache_root,
-            version_name=self.version_name,
-            target_degree=self.target_degree,
-            min_curve_length=self.min_curve_length,
-        )
+        cache_path = Path(record.get('bezier_cache_path', target_cache_path(edge_path=Path(record['edge_path']), cache_root=self.cache_root)))
+        if not cache_path.exists():
+            cache_path = ensure_target_cache(
+                edge_path=Path(record['edge_path']),
+                cache_root=self.cache_root,
+                version_name=self.version_name,
+                target_degree=self.target_degree,
+                min_curve_length=self.min_curve_length,
+            )
         self._target_cache_path_cache[int(index)] = cache_path
         return cache_path
 

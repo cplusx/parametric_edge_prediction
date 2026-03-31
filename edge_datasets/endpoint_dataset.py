@@ -15,6 +15,7 @@ from misc_utils.bezier_target_utils import (
     load_cached_targets,
     load_image_array_original,
     resolve_input_path,
+    target_cache_path,
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
@@ -376,13 +377,15 @@ class LaionSyntheticEndpointDataset(Dataset):
         if cached is not None:
             return cached
         record = self.sample_records[index]
-        cache_path = ensure_target_cache(
-            edge_path=Path(record['edge_path']),
-            cache_root=self.cache_root,
-            version_name=self.version_name,
-            target_degree=self.target_degree,
-            min_curve_length=self.min_curve_length,
-        )
+        cache_path = Path(record.get('bezier_cache_path', target_cache_path(edge_path=Path(record['edge_path']), cache_root=self.cache_root)))
+        if not cache_path.exists():
+            cache_path = ensure_target_cache(
+                edge_path=Path(record['edge_path']),
+                cache_root=self.cache_root,
+                version_name=self.version_name,
+                target_degree=self.target_degree,
+                min_curve_length=self.min_curve_length,
+            )
         self._target_cache_path_cache[int(index)] = cache_path
         return cache_path
 
