@@ -158,6 +158,25 @@ class ParametricEndpointDataset(Dataset):
             redirected += 1
         return redirected
 
+    def _redirected_item_once(self, redirected_index: int) -> Dict:
+        try:
+            redirected_item = self._build_item(redirected_index)
+        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+            edge_path = self.edge_paths[int(redirected_index) % len(self.edge_paths)]
+            redirected_item = _empty_endpoint_item(
+                image_size=self.image_size,
+                rgb_input=self.rgb_input,
+                sample_id=f'{edge_path.stem}_redirect_fallback',
+                edge_path=str(edge_path),
+                input_path='',
+            )
+        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_rejected_candidates'] = (
+            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+        )
+        return redirected_item
+
     def _build_item(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
         cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
@@ -229,24 +248,12 @@ class ParametricEndpointDataset(Dataset):
                 raw_point_count = None
             if raw_point_count is None or raw_point_count > self.curriculum_global_skip_points:
                 redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-                redirected_item = self[redirected_index]
-                redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-                redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-                redirected_item['target']['curriculum_rejected_candidates'] = (
-                    redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-                )
-                return redirected_item
+                return self._redirected_item_once(redirected_index)
         try:
             item = self._build_item(index)
         except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
             redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-            redirected_item = self[redirected_index]
-            redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-            redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-            redirected_item['target']['curriculum_rejected_candidates'] = (
-                redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-            )
-            return redirected_item
+            return self._redirected_item_once(redirected_index)
         point_count = int(item['target']['points'].shape[0])
         if 0 < point_count <= cap:
             item['target']['curriculum_direct_accept'] = torch.tensor(1.0, dtype=torch.float32)
@@ -254,13 +261,7 @@ class ParametricEndpointDataset(Dataset):
             item['target']['curriculum_rejected_candidates'] = torch.tensor(0.0, dtype=torch.float32)
             return item
         redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-        redirected_item = self[redirected_index]
-        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-        redirected_item['target']['curriculum_rejected_candidates'] = (
-            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-        )
-        return redirected_item
+        return self._redirected_item_once(redirected_index)
 
 
 class LaionSyntheticEndpointDataset(Dataset):
@@ -334,6 +335,26 @@ class LaionSyntheticEndpointDataset(Dataset):
             redirected += 1
         return redirected
 
+    def _redirected_item_once(self, redirected_index: int) -> Dict:
+        try:
+            redirected_item = self._build_item(redirected_index)
+        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+            record = self.sample_records[int(redirected_index) % len(self.sample_records)]
+            sample_id = f"{record['batch_name']}_{record['image_id']}_redirect_fallback"
+            redirected_item = _empty_endpoint_item(
+                image_size=self.image_size,
+                rgb_input=self.rgb_input,
+                sample_id=sample_id,
+                edge_path=str(record['edge_path']),
+                input_path=str(record['image_path']),
+            )
+        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
+        redirected_item['target']['curriculum_rejected_candidates'] = (
+            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
+        )
+        return redirected_item
+
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
         graph_data = load_cached_graph(Path(record['cache_path']))
@@ -403,24 +424,12 @@ class LaionSyntheticEndpointDataset(Dataset):
                 raw_point_count = None
             if raw_point_count is None or raw_point_count > self.curriculum_global_skip_points:
                 redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-                redirected_item = self[redirected_index]
-                redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-                redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-                redirected_item['target']['curriculum_rejected_candidates'] = (
-                    redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-                )
-                return redirected_item
+                return self._redirected_item_once(redirected_index)
         try:
             item = self._build_item(index)
         except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
             redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-            redirected_item = self[redirected_index]
-            redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-            redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-            redirected_item['target']['curriculum_rejected_candidates'] = (
-                redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-            )
-            return redirected_item
+            return self._redirected_item_once(redirected_index)
         point_count = int(item['target']['points'].shape[0])
         if 0 < point_count <= cap:
             item['target']['curriculum_direct_accept'] = torch.tensor(1.0, dtype=torch.float32)
@@ -428,13 +437,7 @@ class LaionSyntheticEndpointDataset(Dataset):
             item['target']['curriculum_rejected_candidates'] = torch.tensor(0.0, dtype=torch.float32)
             return item
         redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-        redirected_item = self[redirected_index]
-        redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
-        redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
-        redirected_item['target']['curriculum_rejected_candidates'] = (
-            redirected_item['target']['curriculum_rejected_candidates'] + 1.0
-        )
-        return redirected_item
+        return self._redirected_item_once(redirected_index)
 
 
 def endpoint_detection_collate(batch: List[Dict]) -> Dict:
