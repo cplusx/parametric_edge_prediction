@@ -10,7 +10,31 @@ from scipy import sparse
 from bezierization.ablation_api import run_version
 
 SUPPORTED_INPUT_SUFFIXES = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
-TARGET_CACHE_FORMAT_VERSION = 'bezier_refit_v7_xy_deg5_curvature_normlen_polarityfix'
+TARGET_CACHE_FORMAT_VERSION = 'bezier_refit_v8_xy_deg5_curvature_normlen_stablekey'
+
+
+def canonical_edge_cache_id(edge_path: Path) -> str:
+    edge_path = Path(edge_path)
+    parts = edge_path.resolve().parts
+    marker_priority = (
+        'laion_edge_v2',
+        'laion_edge_v1',
+        'BSDS500',
+        'BIPED',
+        'NYUD',
+        'MULTICUE',
+        'multicue',
+    )
+    for marker in marker_priority:
+        if marker in parts:
+            marker_index = parts.index(marker)
+            return '/'.join(parts[marker_index:])
+    for marker_index, marker in enumerate(parts):
+        if marker.startswith('batch'):
+            return '/'.join(parts[marker_index:])
+    if len(parts) >= 6:
+        return '/'.join(parts[-6:])
+    return edge_path.name
 
 
 def rc_to_xy(points: np.ndarray) -> np.ndarray:
@@ -180,7 +204,7 @@ def control_point_bbox(control_points: np.ndarray) -> Tuple[float, float, float,
 
 def build_cache_key(edge_path: Path, version_name: str, target_degree: int, min_curve_length: float) -> str:
     payload = {
-        'edge_path': str(edge_path.resolve()),
+        'edge_path': canonical_edge_cache_id(edge_path),
         'version_name': version_name,
         'target_degree': target_degree,
         'min_curve_length': min_curve_length,
