@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
-from misc_utils.bezier_target_utils import control_point_bbox, curve_length, fit_polyline_to_bezier, polyline_curvature_score
+from misc_utils.bezier_target_utils import control_point_bbox, curve_length, denormalize_control_points, fit_polyline_to_bezier, polyline_curvature_score, sample_bezier_numpy
 
 
 def _size_tuple(image_size) -> Tuple[int, int]:
@@ -52,6 +52,40 @@ def _scale_polylines(polylines: List[np.ndarray], scale_x: float, scale_y: float
     scale = np.asarray([scale_x, scale_y], dtype=np.float32)
     return [np.asarray(polyline, dtype=np.float32) * scale for polyline in polylines]
 
+
+
+
+def _scale_curves(curves: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
+    curves = np.asarray(curves, dtype=np.float32)
+    if curves.size == 0:
+        return np.zeros_like(curves, dtype=np.float32)
+    scale = np.asarray([scale_x, scale_y], dtype=np.float32)
+    return (curves * scale[None, None, :]).astype(np.float32)
+
+
+def apply_horizontal_flip_to_curves(curves: np.ndarray, width: int) -> np.ndarray:
+    curves = np.asarray(curves, dtype=np.float32).copy()
+    if curves.size == 0:
+        return curves
+    curves[..., 0] = (width - 1) - curves[..., 0]
+    return curves
+
+
+def apply_vertical_flip_to_curves(curves: np.ndarray, height: int) -> np.ndarray:
+    curves = np.asarray(curves, dtype=np.float32).copy()
+    if curves.size == 0:
+        return curves
+    curves[..., 1] = (height - 1) - curves[..., 1]
+    return curves
+
+
+def apply_affine_to_curves(curves: np.ndarray, matrix_xy: np.ndarray) -> np.ndarray:
+    curves = np.asarray(curves, dtype=np.float32)
+    if curves.size == 0:
+        return np.zeros_like(curves, dtype=np.float32)
+    linear = matrix_xy[:2, :2]
+    offset = matrix_xy[:2, 2]
+    return ((curves @ linear.T) + offset).astype(np.float32)
 
 def _normalize_xy_control_points(control_points: np.ndarray, width: int, height: int) -> np.ndarray:
     scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
@@ -214,15 +248,226 @@ def _clip_segment_to_rect(p0: np.ndarray, p1: np.ndarray, width: int, height: in
     return clipped_start.astype(np.float32), clipped_end.astype(np.float32)
 
 
-def _deduplicate_points(points: List[np.ndarray]) -> np.ndarray:
-    if not points:
+def _deduplicate_points(points) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    if points.size == 0:
         return np.zeros((0, 2), dtype=np.float32)
-    deduped = [np.asarray(points[0], dtype=np.float32)]
-    for point in points[1:]:
-        point = np.asarray(point, dtype=np.float32)
-        if np.linalg.norm(point - deduped[-1]) > 1e-4:
-            deduped.append(point)
-    return np.stack(deduped, axis=0).astype(np.float32)
+    if points.shape[0] == 1:
+        return points.astype(np.float32, copy=True)
+    deltas = np.linalg.norm(points[1:] - points[:-1], axis=1)
+    keep = np.concatenate(
+        [np.ones(1, dtype=bool), deltas > 1e-4],
+        axis=0,
+    )
+    return points[keep].astype(np.float32, copy=False)
+
+
+def _clip_segments_to_bounds_vectorized(
+    starts: np.ndarray,
+    ends: np.ndarray,
+    xmin: float,
+    ymin: float,
+    xmax: float,
+    ymax: float,
+):
+    if starts.size == 0:
+        empty = np.zeros((0, 2), dtype=np.float32)
+        return np.zeros((0,), dtype=bool), empty, empty
+    starts = np.asarray(starts, dtype=np.float32)
+    ends = np.asarray(ends, dtype=np.float32)
+    delta = ends - starts
+    dx = delta[:, 0]
+    dy = delta[:, 1]
+    p = np.stack([-dx, dx, -dy, dy], axis=1)
+    q = np.stack(
+        [
+            starts[:, 0] - xmin,
+            xmax - starts[:, 0],
+            starts[:, 1] - ymin,
+            ymax - starts[:, 1],
+        ],
+        axis=1,
+    )
+    u0 = np.zeros((starts.shape[0],), dtype=np.float32)
+    u1 = np.ones((starts.shape[0],), dtype=np.float32)
+    valid = np.ones((starts.shape[0],), dtype=bool)
+    eps = 1e-8
+    for boundary_idx in range(4):
+        pi = p[:, boundary_idx]
+        qi = q[:, boundary_idx]
+        parallel = np.abs(pi) < eps
+        valid &= ~(parallel & (qi < 0.0))
+        non_parallel = ~parallel
+        if not np.any(non_parallel):
+            continue
+        t = np.zeros_like(pi, dtype=np.float32)
+        t[non_parallel] = qi[non_parallel] / pi[non_parallel]
+        negative = non_parallel & (pi < 0.0)
+        positive = non_parallel & (pi > 0.0)
+        if np.any(negative):
+            u0[negative] = np.maximum(u0[negative], t[negative])
+        if np.any(positive):
+            u1[positive] = np.minimum(u1[positive], t[positive])
+    valid &= u0 <= u1
+    clipped_starts = starts + u0[:, None] * delta
+    clipped_ends = starts + u1[:, None] * delta
+    return valid, clipped_starts.astype(np.float32), clipped_ends.astype(np.float32)
+
+
+def _clip_segments_to_rect_vectorized(starts: np.ndarray, ends: np.ndarray, width: int, height: int):
+    return _clip_segments_to_bounds_vectorized(
+        starts,
+        ends,
+        xmin=0.0,
+        ymin=0.0,
+        xmax=float(max(width - 1, 0)),
+        ymax=float(max(height - 1, 0)),
+    )
+
+
+def _pad_image_mask_and_polylines_for_crop(
+    image: np.ndarray,
+    mask: np.ndarray,
+    polylines: List[np.ndarray],
+    crop_h: int,
+    crop_w: int,
+) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+    height, width = image.shape[:2]
+    if height >= crop_h and width >= crop_w:
+        return image, mask, polylines
+    pad_h = max(crop_h - height, 0)
+    pad_w = max(crop_w - width, 0)
+    top = pad_h // 2
+    bottom = pad_h - top
+    left = pad_w // 2
+    right = pad_w - left
+    image = np.pad(image, ((top, bottom), (left, right), (0, 0)), mode='reflect')
+    mask = np.pad(mask, ((top, bottom), (left, right), (0, 0)), mode='constant', constant_values=0.0)
+    polylines = [np.asarray(polyline, dtype=np.float32) + np.asarray([left, top], dtype=np.float32) for polyline in polylines]
+    return image, mask, polylines
+
+
+def random_crop_image_and_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    crop_size: Tuple[int, int],
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int]]:
+    if mask.ndim == 2:
+        mask = mask[..., None]
+    crop_h, crop_w = crop_size
+    height, width = image.shape[:2]
+    max_top = height - crop_h
+    max_left = width - crop_w
+    top = int(rng.integers(0, max_top + 1)) if max_top > 0 else 0
+    left = int(rng.integers(0, max_left + 1)) if max_left > 0 else 0
+    cropped_image = image[top:top + crop_h, left:left + crop_w].copy()
+    cropped_mask = mask[top:top + crop_h, left:left + crop_w].copy()
+    return cropped_image, cropped_mask, (left, top)
+
+
+def _dedupe_point_cloud(points: List[np.ndarray], dedupe_distance_px: float) -> np.ndarray:
+    points_px = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+    if points_px.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if points_px.shape[0] == 1:
+        return points_px.astype(np.float32, copy=True)
+
+    # Keep ordering deterministic before greedy suppression.
+    order = np.lexsort((points_px[:, 1], points_px[:, 0]))
+    sorted_points = points_px[order]
+    threshold_sq = float(dedupe_distance_px) ** 2
+    deltas = sorted_points[:, None, :] - sorted_points[None, :, :]
+    distance_sq = np.sum(deltas * deltas, axis=-1)
+
+    suppressed = np.zeros((sorted_points.shape[0],), dtype=bool)
+    kept_points: List[np.ndarray] = []
+    for idx in range(sorted_points.shape[0]):
+        if suppressed[idx]:
+            continue
+        kept_points.append(sorted_points[idx])
+        suppressed |= distance_sq[idx] <= threshold_sq
+        suppressed[idx] = True
+
+    return np.stack(kept_points, axis=0).astype(np.float32, copy=False)
+
+
+def build_endpoint_targets_from_crop_union(
+    curves: np.ndarray,
+    crop_left: int,
+    crop_top: int,
+    crop_width: int,
+    crop_height: int,
+    dedupe_distance_px: float,
+    num_curve_samples: int = 48,
+) -> Dict[str, np.ndarray]:
+    xmin = float(crop_left)
+    ymin = float(crop_top)
+    xmax = float(crop_left + max(crop_width - 1, 0))
+    ymax = float(crop_top + max(crop_height - 1, 0))
+    offset = np.asarray([crop_left, crop_top], dtype=np.float32)
+    curves = np.asarray(curves, dtype=np.float32)
+    candidate_points: List[np.ndarray] = []
+
+    if curves.size == 0:
+        point_array = np.zeros((0, 2), dtype=np.float32)
+        return {
+            'points': point_array,
+            'image_size': np.asarray([crop_height, crop_width], dtype=np.int64),
+        }
+
+    endpoints = np.concatenate([curves[:, 0, :], curves[:, -1, :]], axis=0)
+    inside = (
+        (endpoints[:, 0] >= xmin)
+        & (endpoints[:, 0] <= xmax)
+        & (endpoints[:, 1] >= ymin)
+        & (endpoints[:, 1] <= ymax)
+    )
+    if np.any(inside):
+        for point in endpoints[inside]:
+            candidate_points.append(point - offset)
+
+    sampled_starts: List[np.ndarray] = []
+    sampled_ends: List[np.ndarray] = []
+    for control_points in curves:
+        sampled = sample_bezier_numpy(control_points, num_samples=num_curve_samples)
+        if sampled.shape[0] < 2:
+            continue
+        sampled_starts.append(sampled[:-1])
+        sampled_ends.append(sampled[1:])
+
+    if sampled_starts:
+        starts = np.concatenate(sampled_starts, axis=0)
+        ends = np.concatenate(sampled_ends, axis=0)
+        valid, clipped_starts, clipped_ends = _clip_segments_to_bounds_vectorized(
+            starts,
+            ends,
+            xmin=xmin,
+            ymin=ymin,
+            xmax=xmax,
+            ymax=ymax,
+        )
+        if np.any(valid):
+            eps = 1e-4
+            start_changed = valid & (np.linalg.norm(clipped_starts - starts, axis=1) > eps)
+            end_changed = valid & (np.linalg.norm(clipped_ends - ends, axis=1) > eps)
+            if np.any(start_changed):
+                for point in clipped_starts[start_changed]:
+                    candidate_points.append(point - offset)
+            if np.any(end_changed):
+                for point in clipped_ends[end_changed]:
+                    candidate_points.append(point - offset)
+
+    points_px = _dedupe_point_cloud(candidate_points, dedupe_distance_px=dedupe_distance_px)
+    if points_px.size == 0:
+        point_array = np.zeros((0, 2), dtype=np.float32)
+    else:
+        scale = np.asarray([max(crop_width - 1, 1), max(crop_height - 1, 1)], dtype=np.float32)
+        point_array = np.clip(points_px / scale[None, :], 0.0, 1.0).astype(np.float32)
+    return {
+        'points': point_array,
+        'image_size': np.asarray([crop_height, crop_width], dtype=np.int64),
+    }
 
 
 def clip_polylines_to_rect(polylines: List[np.ndarray], width: int, height: int) -> List[np.ndarray]:
@@ -231,26 +476,34 @@ def clip_polylines_to_rect(polylines: List[np.ndarray], width: int, height: int)
         points = np.asarray(polyline, dtype=np.float32)
         if points.shape[0] < 2:
             continue
-        current: List[np.ndarray] = []
-        for start, end in zip(points[:-1], points[1:]):
-            clipped = _clip_segment_to_rect(start, end, width, height)
-            if clipped is None:
-                if len(current) >= 2:
-                    clipped_polylines.append(_deduplicate_points(current))
-                current = []
-                continue
-            c0, c1 = clipped
-            if not current:
-                current = [c0, c1]
-                continue
-            if np.linalg.norm(current[-1] - c0) > 1e-3:
-                if len(current) >= 2:
-                    clipped_polylines.append(_deduplicate_points(current))
-                current = [c0, c1]
-            else:
-                current.append(c1)
-        if len(current) >= 2:
-            clipped_polylines.append(_deduplicate_points(current))
+        starts = points[:-1]
+        ends = points[1:]
+        valid, clipped_starts, clipped_ends = _clip_segments_to_rect_vectorized(starts, ends, width, height)
+        if not np.any(valid):
+            continue
+        valid_indices = np.flatnonzero(valid)
+        run_start = 0
+        for local_idx in range(1, valid_indices.shape[0] + 1):
+            reached_end = local_idx == valid_indices.shape[0]
+            if not reached_end:
+                prev_idx = valid_indices[local_idx - 1]
+                curr_idx = valid_indices[local_idx]
+                contiguous_segments = curr_idx == prev_idx + 1
+                connected_segments = (
+                    contiguous_segments
+                    and np.linalg.norm(clipped_ends[prev_idx] - clipped_starts[curr_idx]) <= 1e-3
+                )
+                if connected_segments:
+                    continue
+            run_indices = valid_indices[run_start:local_idx]
+            run_points = np.concatenate(
+                [clipped_starts[run_indices[:1]], clipped_ends[run_indices]],
+                axis=0,
+            )
+            deduped = _deduplicate_points(run_points)
+            if deduped.shape[0] >= 2:
+                clipped_polylines.append(deduped)
+            run_start = local_idx
     return [polyline for polyline in clipped_polylines if polyline.shape[0] >= 2]
 
 
@@ -410,6 +663,64 @@ def build_targets_from_polylines(
     }
 
 
+def build_targets_from_curves(
+    curves_px: np.ndarray,
+    image_shape: Tuple[int, int],
+    max_targets: int,
+) -> Dict[str, np.ndarray]:
+    height, width = image_shape
+    control_count = int(curves_px.shape[1]) if np.asarray(curves_px).ndim == 3 and curves_px.shape[1] > 0 else 6
+    curves: List[np.ndarray] = []
+    lengths: List[float] = []
+    boxes: List[List[float]] = []
+    curvatures: List[float] = []
+    norm_lengths: List[float] = []
+    image_diag = float(max(np.hypot(max(width - 1, 1), max(height - 1, 1)), 1.0))
+    xmin = 0.0
+    ymin = 0.0
+    xmax = float(max(width - 1, 0))
+    ymax = float(max(height - 1, 0))
+
+    for control_points in np.asarray(curves_px, dtype=np.float32):
+        if control_points.ndim != 2 or control_points.shape[0] < 2:
+            continue
+        min_x, min_y = np.min(control_points, axis=0)
+        max_x, max_y = np.max(control_points, axis=0)
+        if max_x < xmin or min_x > xmax or max_y < ymin or min_y > ymax:
+            continue
+        seg_length = curve_length(control_points)
+        normalized = _normalize_xy_control_points(control_points, width, height)
+        curves.append(normalized)
+        lengths.append(seg_length)
+        norm_lengths.append(seg_length / image_diag)
+        boxes.append(list(control_point_bbox(normalized)))
+        sampled = sample_bezier_numpy(control_points, num_samples=48)
+        curvatures.append(polyline_curvature_score(sampled))
+
+    if curves:
+        order = np.argsort(np.asarray(lengths))[::-1][:max_targets]
+        curve_array = np.stack([curves[idx] for idx in order]).astype(np.float32)
+        length_array = np.asarray([lengths[idx] for idx in order], dtype=np.float32)
+        box_array = np.asarray([boxes[idx] for idx in order], dtype=np.float32)
+        curvature_array = np.asarray([curvatures[idx] for idx in order], dtype=np.float32)
+        norm_length_array = np.asarray([norm_lengths[idx] for idx in order], dtype=np.float32)
+    else:
+        curve_array = np.zeros((0, control_count, 2), dtype=np.float32)
+        length_array = np.zeros((0,), dtype=np.float32)
+        box_array = np.zeros((0, 4), dtype=np.float32)
+        curvature_array = np.zeros((0,), dtype=np.float32)
+        norm_length_array = np.zeros((0,), dtype=np.float32)
+
+    return {
+        'curves': curve_array,
+        'curve_lengths': length_array,
+        'curve_boxes': box_array,
+        'curve_curvatures': curvature_array,
+        'curve_norm_lengths': norm_length_array,
+        'image_size': np.asarray([height, width], dtype=np.int64),
+    }
+
+
 def build_endpoint_targets_from_polylines(
     polylines: List[np.ndarray],
     image_shape: Tuple[int, int],
@@ -426,25 +737,7 @@ def build_endpoint_targets_from_polylines(
 
     if endpoints:
         scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
-        centers_px: List[np.ndarray] = []
-        counts: List[int] = []
-        threshold = float(dedupe_distance_px)
-        for point_px in endpoints:
-            point_px = np.asarray(point_px, dtype=np.float32)
-            if not centers_px:
-                centers_px.append(point_px.copy())
-                counts.append(1)
-                continue
-            distances = np.linalg.norm(np.stack(centers_px, axis=0) - point_px[None, :], axis=1)
-            best_idx = int(np.argmin(distances))
-            if float(distances[best_idx]) <= threshold:
-                count = counts[best_idx]
-                centers_px[best_idx] = (centers_px[best_idx] * count + point_px) / float(count + 1)
-                counts[best_idx] = count + 1
-            else:
-                centers_px.append(point_px.copy())
-                counts.append(1)
-        point_array = np.stack(centers_px, axis=0).astype(np.float32) / scale[None, :]
+        point_array = _dedupe_point_cloud(endpoints, dedupe_distance_px=dedupe_distance_px) / scale[None, :]
         point_array = np.clip(point_array, 0.0, 1.0)
     else:
         point_array = np.zeros((0, 2), dtype=np.float32)
@@ -552,28 +845,37 @@ def prepare_training_sample_with_mask(
 def prepare_training_endpoint_sample_with_mask(
     image: np.ndarray,
     mask: np.ndarray,
-    polylines: List[np.ndarray],
+    curves: np.ndarray,
     image_size,
     augment_cfg: Dict,
     rng: np.random.Generator,
     dedupe_distance_px: float,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     output_size = _size_tuple(image_size)
+    src_h, src_w = image.shape[:2]
+    curves_px = np.asarray(
+        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
+        dtype=np.float32,
+    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+
     resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
     resize_scale = float(rng.uniform(resize_min, resize_max))
     scale_min, scale_max = augment_cfg.get('affine_scale_range', [0.95, 1.05])
     affine_scale = float(rng.uniform(scale_min, scale_max))
     safe_resize_multiplier = resize_scale / max(affine_scale, 1e-6)
-    image, polylines = resize_with_aspect_ratio(image, polylines, output_size=output_size, scale_multiplier=safe_resize_multiplier)
+    image, _ = resize_with_aspect_ratio(image, [], output_size=output_size, scale_multiplier=safe_resize_multiplier)
     resized_h, resized_w = image.shape[:2]
     mask = _resize_mask(mask if mask.ndim == 3 else mask[..., None], resized_h, resized_w)
+    curves_px = _scale_curves(curves_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
 
     if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
-        image, polylines = apply_horizontal_flip(image, polylines)
+        image = image[:, ::-1].copy()
         mask = mask[:, ::-1].copy()
+        curves_px = apply_horizontal_flip_to_curves(curves_px, image.shape[1])
     if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
-        image, polylines = apply_vertical_flip(image, polylines)
+        image = image[::-1].copy()
         mask = mask[::-1].copy()
+        curves_px = apply_vertical_flip_to_curves(curves_px, image.shape[0])
 
     max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
     angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
@@ -583,14 +885,140 @@ def prepare_training_endpoint_sample_with_mask(
     matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
     image = apply_affine_to_image(image, matrix_xy)
     mask = apply_affine_to_mask(mask, matrix_xy)
-    polylines = apply_affine_to_polylines(polylines, matrix_xy)
+    curves_px = apply_affine_to_curves(curves_px, matrix_xy)
 
-    image, mask, polylines = random_crop_image_mask_and_polylines(image, mask, polylines, crop_size=output_size, rng=rng)
-    targets = build_endpoint_targets_from_polylines(
-        polylines,
-        image_shape=image.shape[:2],
+    image, mask = _pad_image_mask_and_polylines_for_crop(image, mask if mask.ndim == 3 else mask[..., None], [], crop_h=output_size[0], crop_w=output_size[1])[:2]
+    pad_h = image.shape[0] - resized_h
+    pad_w = image.shape[1] - resized_w
+    if curves_px.size:
+        curves_px = curves_px + np.asarray([pad_w // 2, pad_h // 2], dtype=np.float32)[None, None, :]
+    image, mask, (crop_left, crop_top) = random_crop_image_and_mask(image, mask, crop_size=output_size, rng=rng)
+    targets = build_endpoint_targets_from_crop_union(
+        curves_px,
+        crop_left=crop_left,
+        crop_top=crop_top,
+        crop_width=output_size[1],
+        crop_height=output_size[0],
         dedupe_distance_px=dedupe_distance_px,
     )
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
+def prepare_training_curve_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    curves: np.ndarray,
+    image_size,
+    max_targets: int,
+    augment_cfg: Dict,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    src_h, src_w = image.shape[:2]
+    curves_px = np.asarray(
+        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
+        dtype=np.float32,
+    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+
+    resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
+    resize_scale = float(rng.uniform(resize_min, resize_max))
+    scale_min, scale_max = augment_cfg.get('affine_scale_range', [0.95, 1.05])
+    affine_scale = float(rng.uniform(scale_min, scale_max))
+    safe_resize_multiplier = resize_scale / max(affine_scale, 1e-6)
+    image, _ = resize_with_aspect_ratio(image, [], output_size=output_size, scale_multiplier=safe_resize_multiplier)
+    resized_h, resized_w = image.shape[:2]
+    mask = _resize_mask(mask if mask.ndim == 3 else mask[..., None], resized_h, resized_w)
+    curves_px = _scale_curves(curves_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
+
+    if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
+        image = image[:, ::-1].copy()
+        mask = mask[:, ::-1].copy()
+        curves_px = apply_horizontal_flip_to_curves(curves_px, image.shape[1])
+    if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
+        image = image[::-1].copy()
+        mask = mask[::-1].copy()
+        curves_px = apply_vertical_flip_to_curves(curves_px, image.shape[0])
+
+    max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
+    angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
+    translate_ratio = float(augment_cfg.get('affine_max_translate_ratio', 0.0))
+    translate_x = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[1])
+    translate_y = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[0])
+    matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
+    image = apply_affine_to_image(image, matrix_xy)
+    mask = apply_affine_to_mask(mask, matrix_xy)
+    curves_px = apply_affine_to_curves(curves_px, matrix_xy)
+
+    image, mask = _pad_image_mask_and_polylines_for_crop(image, mask if mask.ndim == 3 else mask[..., None], [], crop_h=output_size[0], crop_w=output_size[1])[:2]
+    pad_h = image.shape[0] - resized_h
+    pad_w = image.shape[1] - resized_w
+    if curves_px.size:
+        curves_px = curves_px + np.asarray([pad_w // 2, pad_h // 2], dtype=np.float32)[None, None, :]
+    image, mask, (crop_left, crop_top) = random_crop_image_and_mask(image, mask, crop_size=output_size, rng=rng)
+    if curves_px.size:
+        curves_px = curves_px - np.asarray([crop_left, crop_top], dtype=np.float32)[None, None, :]
+    targets = build_targets_from_curves(curves_px, image_shape=image.shape[:2], max_targets=max_targets)
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
+def prepare_eval_endpoint_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    curves: np.ndarray,
+    image_size,
+    dedupe_distance_px: float,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    src_h, src_w = image.shape[:2]
+    curves_px = np.asarray(
+        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
+        dtype=np.float32,
+    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+
+    image, mask, _ = letterbox_image_mask_and_polylines(image, mask, [], output_size=output_size)
+    scale = min(output_size[0] / max(src_h, 1), output_size[1] / max(src_w, 1))
+    new_h = max(1, int(round(src_h * scale)))
+    new_w = max(1, int(round(src_w * scale)))
+    pad_top = (output_size[0] - new_h) // 2
+    pad_left = (output_size[1] - new_w) // 2
+    curves_px = _scale_curves(curves_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
+    if curves_px.size:
+        curves_px = curves_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, None, :]
+    targets = build_endpoint_targets_from_crop_union(
+        curves_px,
+        crop_left=0,
+        crop_top=0,
+        crop_width=output_size[1],
+        crop_height=output_size[0],
+        dedupe_distance_px=dedupe_distance_px,
+    )
+    return image, (mask > 0.5).astype(np.float32), targets
+
+
+def prepare_eval_curve_sample_with_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    curves: np.ndarray,
+    image_size,
+    max_targets: int,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    output_size = _size_tuple(image_size)
+    src_h, src_w = image.shape[:2]
+    curves_px = np.asarray(
+        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
+        dtype=np.float32,
+    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+
+    image, mask, _ = letterbox_image_mask_and_polylines(image, mask, [], output_size=output_size)
+    scale = min(output_size[0] / max(src_h, 1), output_size[1] / max(src_w, 1))
+    new_h = max(1, int(round(src_h * scale)))
+    new_w = max(1, int(round(src_w * scale)))
+    pad_top = (output_size[0] - new_h) // 2
+    pad_left = (output_size[1] - new_w) // 2
+    curves_px = _scale_curves(curves_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
+    if curves_px.size:
+        curves_px = curves_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, None, :]
+    targets = build_targets_from_curves(curves_px, image_shape=image.shape[:2], max_targets=max_targets)
     return image, (mask > 0.5).astype(np.float32), targets
 
 
@@ -606,21 +1034,4 @@ def prepare_eval_sample_with_mask(
     output_size = _size_tuple(image_size)
     image, mask, polylines = letterbox_image_mask_and_polylines(image, mask, polylines, output_size=output_size)
     targets = build_targets_from_polylines(polylines, image_shape=image.shape[:2], target_degree=target_degree, min_curve_length=min_curve_length, max_targets=max_targets)
-    return image, (mask > 0.5).astype(np.float32), targets
-
-
-def prepare_eval_endpoint_sample_with_mask(
-    image: np.ndarray,
-    mask: np.ndarray,
-    polylines: List[np.ndarray],
-    image_size,
-    dedupe_distance_px: float,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    output_size = _size_tuple(image_size)
-    image, mask, polylines = letterbox_image_mask_and_polylines(image, mask, polylines, output_size=output_size)
-    targets = build_endpoint_targets_from_polylines(
-        polylines,
-        image_shape=image.shape[:2],
-        dedupe_distance_px=dedupe_distance_px,
-    )
     return image, (mask > 0.5).astype(np.float32), targets

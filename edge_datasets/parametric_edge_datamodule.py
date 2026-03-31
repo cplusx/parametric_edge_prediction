@@ -209,7 +209,9 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
             raise FileNotFoundError(f'No LAION synthetic samples found for config: {dataset_cfg}')
         return LaionSyntheticEdgeDataset(
             sample_records=sample_records,
+            cache_root=Path(dataset_cfg.get('cache_root', Path(dataset_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
             image_size=int(common['image_size']),
+            version_name=str(common['version_name']),
             target_degree=int(common['target_degree']),
             min_curve_length=float(common['min_curve_length']),
             max_targets=int(common['max_targets']),

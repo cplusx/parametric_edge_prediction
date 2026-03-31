@@ -6,17 +6,15 @@ import torch
 from torch.utils.data import Dataset
 
 from edge_datasets.graph_pipeline import (
-    build_endpoint_targets_from_polylines,
     prepare_eval_endpoint_sample_with_mask,
     prepare_training_endpoint_sample_with_mask,
 )
 from misc_utils.bezier_target_utils import (
-    ensure_graph_cache,
+    ensure_target_cache,
     load_binary_edge_annotation,
-    load_cached_graph,
+    load_cached_targets,
     load_image_array_original,
     resolve_input_path,
-    unpack_polylines,
 )
 from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
@@ -118,6 +116,7 @@ class ParametricEndpointDataset(Dataset):
         self.curriculum_global_skip_points = 0
         self.current_epoch = 0
         self._raw_endpoint_count_cache: Dict[int, int] = {}
+        self._target_cache_path_cache: Dict[int, Path] = {}
 
     def __len__(self) -> int:
         return len(self.edge_paths)
@@ -177,20 +176,35 @@ class ParametricEndpointDataset(Dataset):
         )
         return redirected_item
 
+    def _target_cache_path(self, index: int) -> Path:
+        cached = self._target_cache_path_cache.get(int(index))
+        if cached is not None:
+            return cached
+        edge_path = self.edge_paths[index]
+        cache_path = ensure_target_cache(
+            edge_path=edge_path,
+            cache_root=self.cache_root,
+            version_name=self.version_name,
+            target_degree=self.target_degree,
+            min_curve_length=self.min_curve_length,
+        )
+        self._target_cache_path_cache[int(index)] = cache_path
+        return cache_path
+
     def _build_item(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
-        cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
-        graph_data = load_cached_graph(cache_path)
+        cache_path = self._target_cache_path(index)
+        target_cache = load_cached_targets(cache_path)
         image_path = resolve_input_path(edge_path, self.input_root)
         image = load_image_array_original(image_path, rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(edge_path).astype(np.float32)[..., None] / 255.0
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        curves = np.asarray(target_cache['curves'], dtype=np.float32)
         rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
             image_hwc, edge_hwc, target_data = prepare_training_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
@@ -200,7 +214,7 @@ class ParametricEndpointDataset(Dataset):
             image_hwc, edge_hwc, target_data = prepare_eval_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
                 dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
@@ -221,17 +235,14 @@ class ParametricEndpointDataset(Dataset):
         cached = self._raw_endpoint_count_cache.get(int(index))
         if cached is not None:
             return int(cached)
-        edge_path = self.edge_paths[index]
-        cache_path = ensure_graph_cache(edge_path=edge_path, cache_root=self.cache_root, version_name=self.version_name)
-        graph_data = load_cached_graph(cache_path)
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-        image_size = np.asarray(graph_data.get('image_size', [self.image_size, self.image_size]), dtype=np.int64)
-        targets = build_endpoint_targets_from_polylines(
-            polylines=polylines,
-            image_shape=(int(image_size[0]), int(image_size[1])),
+        cache_path = self._target_cache_path(index)
+        target_data = load_cached_targets(cache_path)
+        points = curves_to_unique_endpoints(
+            target_data['curves'],
+            image_size=target_data['image_size'],
             dedupe_distance_px=self.endpoint_dedupe_distance_px,
         )
-        count = int(targets['points'].shape[0])
+        count = int(points.shape[0])
         self._raw_endpoint_count_cache[int(index)] = count
         return count
 
@@ -268,7 +279,9 @@ class LaionSyntheticEndpointDataset(Dataset):
     def __init__(
         self,
         sample_records: Sequence[Dict],
+        cache_root: Path,
         image_size: int,
+        version_name: str,
         target_degree: int,
         min_curve_length: float,
         max_targets: int,
@@ -279,7 +292,9 @@ class LaionSyntheticEndpointDataset(Dataset):
         endpoint_dedupe_distance_px: float = 2.0,
     ) -> None:
         self.sample_records = list(sample_records)
+        self.cache_root = Path(cache_root)
         self.image_size = int(image_size)
+        self.version_name = str(version_name)
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)
         self.max_targets = int(max_targets)
@@ -295,6 +310,7 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.curriculum_global_skip_points = 0
         self.current_epoch = 0
         self._raw_endpoint_count_cache: Dict[int, int] = {}
+        self._target_cache_path_cache: Dict[int, Path] = {}
 
     def __len__(self) -> int:
         return len(self.sample_records)
@@ -355,18 +371,33 @@ class LaionSyntheticEndpointDataset(Dataset):
         )
         return redirected_item
 
+    def _target_cache_path(self, index: int) -> Path:
+        cached = self._target_cache_path_cache.get(int(index))
+        if cached is not None:
+            return cached
+        record = self.sample_records[index]
+        cache_path = ensure_target_cache(
+            edge_path=Path(record['edge_path']),
+            cache_root=self.cache_root / str(record['batch_name']),
+            version_name=self.version_name,
+            target_degree=self.target_degree,
+            min_curve_length=self.min_curve_length,
+        )
+        self._target_cache_path_cache[int(index)] = cache_path
+        return cache_path
+
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
-        graph_data = load_cached_graph(Path(record['cache_path']))
+        target_cache = load_cached_targets(self._target_cache_path(index))
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        curves = np.asarray(target_cache['curves'], dtype=np.float32)
         rng = self._rng_for_index(index)
         if self.split == 'train' and self.train_augment:
             image_hwc, edge_hwc, target_data = prepare_training_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
@@ -376,7 +407,7 @@ class LaionSyntheticEndpointDataset(Dataset):
             image_hwc, edge_hwc, target_data = prepare_eval_endpoint_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
                 dedupe_distance_px=self.endpoint_dedupe_distance_px,
             )
@@ -398,16 +429,14 @@ class LaionSyntheticEndpointDataset(Dataset):
         cached = self._raw_endpoint_count_cache.get(int(index))
         if cached is not None:
             return int(cached)
-        record = self.sample_records[index]
-        graph_data = load_cached_graph(Path(record['cache_path']))
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
-        image_size = np.asarray(graph_data.get('image_size', [self.image_size, self.image_size]), dtype=np.int64)
-        targets = build_endpoint_targets_from_polylines(
-            polylines=polylines,
-            image_shape=(int(image_size[0]), int(image_size[1])),
+        cache_path = self._target_cache_path(index)
+        target_data = load_cached_targets(cache_path)
+        points = curves_to_unique_endpoints(
+            target_data['curves'],
+            image_size=target_data['image_size'],
             dedupe_distance_px=self.endpoint_dedupe_distance_px,
         )
-        count = int(targets['points'].shape[0])
+        count = int(points.shape[0])
         self._raw_endpoint_count_cache[int(index)] = count
         return count
 

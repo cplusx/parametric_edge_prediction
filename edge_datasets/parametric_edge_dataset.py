@@ -5,8 +5,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_training_sample_with_mask
-from misc_utils.bezier_target_utils import ensure_graph_cache, load_binary_edge_annotation, load_cached_graph, load_image_array_original, resolve_input_path, unpack_polylines
+from edge_datasets.graph_pipeline import prepare_eval_curve_sample_with_mask, prepare_training_curve_sample_with_mask
+from misc_utils.bezier_target_utils import ensure_target_cache, load_binary_edge_annotation, load_cached_targets, load_image_array_original, resolve_input_path
 
 
 class ParametricEdgeDataset(Dataset):
@@ -43,37 +43,35 @@ class ParametricEdgeDataset(Dataset):
 
     def __getitem__(self, index: int) -> Dict:
         edge_path = self.edge_paths[index]
-        cache_path = ensure_graph_cache(
+        cache_path = ensure_target_cache(
             edge_path=edge_path,
             cache_root=self.cache_root,
             version_name=self.version_name,
+            target_degree=self.target_degree,
+            min_curve_length=self.min_curve_length,
         )
-        graph_data = load_cached_graph(cache_path)
+        target_cache = load_cached_targets(cache_path)
         image_path = resolve_input_path(edge_path, self.input_root)
         image = load_image_array_original(image_path, rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(edge_path).astype(np.float32)[..., None] / 255.0
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        curves = np.asarray(target_cache['curves'], dtype=np.float32)
         rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
         if self.split == 'train' and self.train_augment:
-            image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_training_curve_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
                 max_targets=self.max_targets,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
             )
         else:
-            image_hwc, edge_hwc, target_data = prepare_eval_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_eval_curve_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
                 max_targets=self.max_targets,
             )
         image_chw = np.transpose(image_hwc, (2, 0, 1))

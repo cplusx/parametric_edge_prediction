@@ -11,7 +11,6 @@ from bezierization.ablation_api import run_version
 
 SUPPORTED_INPUT_SUFFIXES = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
 TARGET_CACHE_FORMAT_VERSION = 'bezier_refit_v7_xy_deg5_curvature_normlen_polarityfix'
-GRAPH_CACHE_FORMAT_VERSION = 'graph_polyline_v1_segments_xy'
 
 
 def rc_to_xy(points: np.ndarray) -> np.ndarray:
@@ -190,15 +189,6 @@ def build_cache_key(edge_path: Path, version_name: str, target_degree: int, min_
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
 
 
-def build_graph_cache_key(edge_path: Path, version_name: str) -> str:
-    payload = {
-        'edge_path': str(edge_path.resolve()),
-        'version_name': version_name,
-        'format_version': GRAPH_CACHE_FORMAT_VERSION,
-    }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
-
-
 def load_binary_edge_annotation(edge_path: Path) -> np.ndarray:
     edge_path = Path(edge_path)
     if edge_path.suffix == '.npz':
@@ -288,80 +278,6 @@ def extract_cubic_targets(edge_path: Path, version_name: str, target_degree: int
         'metrics_f1': 0.0,
         'metrics_chamfer': 0.0,
     }
-
-
-def _collect_graph_polylines(result: Dict) -> List[np.ndarray]:
-    polylines: List[np.ndarray] = []
-    for path_fit in result['fitted_paths']:
-        for segment in path_fit['segments']:
-            polyline = np.asarray(segment.get('points', segment.get('fitted_points')), dtype=np.float32)
-            if polyline.ndim != 2 or polyline.shape[0] < 2:
-                continue
-            polylines.append(rc_to_xy(polyline))
-    return polylines
-
-
-def _pack_polylines(polylines: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
-    if not polylines:
-        return np.zeros((0, 2), dtype=np.float32), np.zeros((1,), dtype=np.int64)
-    offsets = [0]
-    packed = []
-    for polyline in polylines:
-        polyline = np.asarray(polyline, dtype=np.float32)
-        packed.append(polyline)
-        offsets.append(offsets[-1] + polyline.shape[0])
-    return np.concatenate(packed, axis=0).astype(np.float32), np.asarray(offsets, dtype=np.int64)
-
-
-def unpack_polylines(points: np.ndarray, offsets: np.ndarray) -> List[np.ndarray]:
-    points = np.asarray(points, dtype=np.float32)
-    offsets = np.asarray(offsets, dtype=np.int64)
-    polylines: List[np.ndarray] = []
-    for start, end in zip(offsets[:-1], offsets[1:]):
-        if end - start < 2:
-            continue
-        polylines.append(points[start:end].copy())
-    return polylines
-
-
-def extract_graph_segments(edge_path: Path, version_name: str) -> Dict:
-    edge_binary = load_binary_edge_annotation(edge_path)
-    result = run_version(
-        version_name,
-        image_array=edge_binary,
-        output_dir=None,
-        compute_raster=False,
-        compute_summary=False,
-        compute_metrics=False,
-        include_debug_artifacts=False,
-    )
-    height, width = edge_binary.shape[:2]
-    polylines = _collect_graph_polylines(result)
-    packed_points, packed_offsets = _pack_polylines(polylines)
-    return {
-        'graph_points': packed_points,
-        'graph_offsets': packed_offsets,
-        'image_size': np.asarray([height, width], dtype=np.int64),
-        'path': str(edge_path),
-        'image_id': image_id_from_stem(edge_path.stem),
-    }
-
-
-def ensure_graph_cache(edge_path: Path, cache_root: Path, version_name: str) -> Path:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    cache_key = build_graph_cache_key(edge_path, version_name)
-    cache_path = cache_root / f'{edge_path.stem}_{cache_key}_graph.npz'
-    if cache_path.exists():
-        return cache_path
-    payload = extract_graph_segments(edge_path, version_name=version_name)
-    np.savez_compressed(cache_path, **payload)
-    return cache_path
-
-
-def load_cached_graph(cache_path: Path) -> Dict:
-    data = np.load(cache_path, allow_pickle=False)
-    return {key: data[key] for key in data.files}
-
 
 def ensure_target_cache(edge_path: Path, cache_root: Path, version_name: str, target_degree: int = 5, min_curve_length: float = 3.0) -> Path:
     cache_root.mkdir(parents=True, exist_ok=True)

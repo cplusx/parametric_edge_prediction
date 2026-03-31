@@ -5,8 +5,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from edge_datasets.graph_pipeline import prepare_eval_sample_with_mask, prepare_training_sample_with_mask
-from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_graph, load_image_array_original, unpack_polylines
+from edge_datasets.graph_pipeline import prepare_eval_curve_sample_with_mask, prepare_training_curve_sample_with_mask
+from misc_utils.bezier_target_utils import ensure_target_cache, load_binary_edge_annotation, load_cached_targets, load_image_array_original
 
 SUPPORTED_IMAGE_SUFFIXES = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 LAION_ENTRY_CACHE_PROBE_COUNT = 32
@@ -32,7 +32,7 @@ def _filter_laion_sample_records_by_batches(
 
 
 def _record_paths_exist(record: Dict[str, Path]) -> bool:
-    return Path(record['image_path']).exists() and Path(record['edge_path']).exists() and Path(record['cache_path']).exists()
+    return Path(record['image_path']).exists() and Path(record['edge_path']).exists()
 
 
 def _probe_record_indices(records: Sequence[Dict[str, Path]], probe_count: int) -> List[int]:
@@ -75,18 +75,16 @@ def _read_laion_entry_cache(cache_path: Path) -> List[Dict[str, Path]]:
             if not line:
                 continue
             fields = line.split('\t')
-            if len(fields) != 5:
+            if len(fields) not in (4, 5):
                 continue
-            batch_name, image_id, image_path_str, edge_path_str, graph_cache_path_str = fields
+            batch_name, image_id, image_path_str, edge_path_str = fields[:4]
             image_path = Path(image_path_str)
             edge_path = Path(edge_path_str)
-            graph_cache_path = Path(graph_cache_path_str)
             records.append({
                 'batch_name': batch_name,
                 'image_id': image_id,
                 'image_path': image_path,
                 'edge_path': edge_path,
-                'cache_path': graph_cache_path,
             })
     probe_result = _probe_laion_sample_records(records, probe_count=LAION_ENTRY_CACHE_PROBE_COUNT)
     if not probe_result['valid_indices']:
@@ -110,7 +108,6 @@ def _write_laion_entry_cache(cache_path: Path, records: Sequence[Dict[str, Path]
                     str(record['image_id']),
                     str(record['image_path']),
                     str(record['edge_path']),
-                    str(record['cache_path']),
                 ])
             )
             handle.write('\n')
@@ -135,7 +132,6 @@ def _empty_laion_curve_item(record: Dict[str, Path], image_size: int, target_deg
             'sample_id': sample_id,
             'edge_path': str(record['edge_path']),
             'input_path': str(record['image_path']),
-            'cache_path': str(record['cache_path']),
             'dataset_name': 'laion_synthetic',
         },
     }
@@ -188,17 +184,14 @@ def discover_laion_synthetic_samples(
             selection_seed=selection_seed,
             selection_offset=selection_offset,
         )
-    batch_names = sorted(path.name for path in cache_root.glob(batch_glob) if path.is_dir())
+    batch_names = sorted(path.name for path in edge_root.glob(batch_glob) if path.is_dir())
     records: List[Dict[str, Path]] = []
     for batch_name in batch_names:
-        cache_batch_dir = cache_root / batch_name
-        if not cache_batch_dir.exists():
+        edge_batch_dir = edge_root / batch_name / 'edges' / f'quantize_{int(quantize)}' / 'edge'
+        if not edge_batch_dir.exists():
             continue
-        for cache_path in sorted(cache_batch_dir.glob('*_graph.npz')):
-            image_id = cache_path.stem.replace('_graph', '')
-            edge_path = edge_root / batch_name / 'edges' / f'quantize_{int(quantize)}' / 'edge' / f'{image_id}.npz'
-            if not edge_path.exists():
-                continue
+        for edge_path in sorted(edge_batch_dir.glob('*.npz')):
+            image_id = edge_path.stem
             image_path = None
             for suffix in SUPPORTED_IMAGE_SUFFIXES:
                 candidate = image_root / batch_name / 'images' / f'{image_id}{suffix}'
@@ -212,7 +205,6 @@ def discover_laion_synthetic_samples(
                 'image_id': image_id,
                 'image_path': image_path,
                 'edge_path': edge_path,
-                'cache_path': cache_path,
             })
     if records:
         _write_laion_entry_cache(entry_cache_path, records)
@@ -229,7 +221,9 @@ class LaionSyntheticEdgeDataset(Dataset):
     def __init__(
         self,
         sample_records: Sequence[Dict[str, Path]],
+        cache_root: Path,
         image_size: int,
+        version_name: str,
         target_degree: int,
         min_curve_length: float,
         max_targets: int,
@@ -241,7 +235,9 @@ class LaionSyntheticEdgeDataset(Dataset):
         self.sample_records = list(sample_records)
         if not self.sample_records:
             raise ValueError('sample_records must not be empty')
+        self.cache_root = Path(cache_root)
         self.image_size = int(image_size)
+        self.version_name = str(version_name)
         self.target_degree = int(target_degree)
         self.min_curve_length = float(min_curve_length)
         self.max_targets = int(max_targets)
@@ -258,6 +254,7 @@ class LaionSyntheticEdgeDataset(Dataset):
             raise RuntimeError(
                 'Too many unreadable LAION samples in the startup probe set; rebuild the cache or verify dataset paths.'
             )
+        self._target_cache_path_cache: Dict[int, Path] = {}
 
     def __len__(self) -> int:
         return len(self.sample_records)
@@ -275,31 +272,28 @@ class LaionSyntheticEdgeDataset(Dataset):
 
     def _load_item_from_index(self, record_index: int) -> Dict:
         record = self.sample_records[record_index]
-        graph_data = load_cached_graph(Path(record['cache_path']))
+        cache_path = self._target_cache_path(record_index)
+        target_cache = load_cached_targets(cache_path)
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
-        polylines = unpack_polylines(graph_data['graph_points'], graph_data['graph_offsets'])
+        curves = np.asarray(target_cache['curves'], dtype=np.float32)
         rng = np.random.default_rng((torch.initial_seed() + record_index) % (2 ** 32))
         if self.split == 'train' and self.train_augment:
-            image_hwc, edge_hwc, target_data = prepare_training_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_training_curve_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
                 max_targets=self.max_targets,
                 augment_cfg=self.augment_cfg,
                 rng=rng,
             )
         else:
-            image_hwc, edge_hwc, target_data = prepare_eval_sample_with_mask(
+            image_hwc, edge_hwc, target_data = prepare_eval_curve_sample_with_mask(
                 image=image,
                 mask=edge_mask,
-                polylines=polylines,
+                curves=curves,
                 image_size=self.image_size,
-                target_degree=self.target_degree,
-                min_curve_length=self.min_curve_length,
                 max_targets=self.max_targets,
             )
         image_chw = np.transpose(image_hwc, (2, 0, 1))
@@ -328,10 +322,24 @@ class LaionSyntheticEdgeDataset(Dataset):
                 'sample_id': sample_id,
                 'edge_path': str(record['edge_path']),
                 'input_path': str(record['image_path']),
-                'cache_path': str(record['cache_path']),
                 'dataset_name': 'laion_synthetic',
             },
         }
+
+    def _target_cache_path(self, index: int) -> Path:
+        cached = self._target_cache_path_cache.get(int(index))
+        if cached is not None:
+            return cached
+        record = self.sample_records[index]
+        cache_path = ensure_target_cache(
+            edge_path=Path(record['edge_path']),
+            cache_root=self.cache_root / str(record['batch_name']),
+            version_name=self.version_name,
+            target_degree=self.target_degree,
+            min_curve_length=self.min_curve_length,
+        )
+        self._target_cache_path_cache[int(index)] = cache_path
+        return cache_path
 
     def __getitem__(self, index: int) -> Dict:
         tried_indices = set()
