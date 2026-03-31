@@ -333,7 +333,7 @@ class LaionSyntheticEdgeDataset(Dataset):
         record = self.sample_records[index]
         cache_path = ensure_target_cache(
             edge_path=Path(record['edge_path']),
-            cache_root=self.cache_root / str(record['batch_name']),
+            cache_root=self.cache_root,
             version_name=self.version_name,
             target_degree=self.target_degree,
             min_curve_length=self.min_curve_length,

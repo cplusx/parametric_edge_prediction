@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 from edge_datasets.laion_synthetic_dataset import _read_laion_entry_cache
-from misc_utils.bezier_target_utils import build_cache_key, ensure_target_cache
+from misc_utils.bezier_target_utils import ensure_target_cache, target_cache_path
 
 
 def _select_records(
@@ -27,18 +27,9 @@ def _select_records(
 def _cache_path_for_record(
     record: Dict[str, Path],
     cache_root: Path,
-    version_name: str,
-    target_degree: int,
-    min_curve_length: float,
 ) -> Path:
     edge_path = Path(record['edge_path'])
-    cache_key = build_cache_key(
-        edge_path=edge_path,
-        version_name=version_name,
-        target_degree=target_degree,
-        min_curve_length=min_curve_length,
-    )
-    return cache_root / str(record['batch_name']) / f'{edge_path.stem}_{cache_key}.npz'
+    return target_cache_path(edge_path=edge_path, cache_root=cache_root)
 
 
 def _build_one(task: Tuple[str, str, str, str, int, float]) -> Dict[str, object]:
@@ -48,15 +39,12 @@ def _build_one(task: Tuple[str, str, str, str, int, float]) -> Dict[str, object]
     cache_path = _cache_path_for_record(
         {'edge_path': edge_path, 'batch_name': batch_name},
         cache_root=Path(cache_root_str),
-        version_name=version_name,
-        target_degree=target_degree,
-        min_curve_length=min_curve_length,
     )
     existed_before = cache_path.exists()
     start_time = time.perf_counter()
     ensure_target_cache(
         edge_path=edge_path,
-        cache_root=cache_root,
+        cache_root=Path(cache_root_str),
         version_name=version_name,
         target_degree=int(target_degree),
         min_curve_length=float(min_curve_length),

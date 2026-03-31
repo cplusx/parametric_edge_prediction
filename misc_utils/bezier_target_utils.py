@@ -1,5 +1,3 @@
-import hashlib
-import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -10,31 +8,7 @@ from scipy import sparse
 from bezierization.ablation_api import run_version
 
 SUPPORTED_INPUT_SUFFIXES = ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
-TARGET_CACHE_FORMAT_VERSION = 'bezier_refit_v8_xy_deg5_curvature_normlen_stablekey'
-
-
-def canonical_edge_cache_id(edge_path: Path) -> str:
-    edge_path = Path(edge_path)
-    parts = edge_path.resolve().parts
-    marker_priority = (
-        'laion_edge_v2',
-        'laion_edge_v1',
-        'BSDS500',
-        'BIPED',
-        'NYUD',
-        'MULTICUE',
-        'multicue',
-    )
-    for marker in marker_priority:
-        if marker in parts:
-            marker_index = parts.index(marker)
-            return '/'.join(parts[marker_index:])
-    for marker_index, marker in enumerate(parts):
-        if marker.startswith('batch'):
-            return '/'.join(parts[marker_index:])
-    if len(parts) >= 6:
-        return '/'.join(parts[-6:])
-    return edge_path.name
+TARGET_CACHE_FORMAT_VERSION = 'bezier_refit_v9_xy_deg5_structured_dirs'
 
 
 def rc_to_xy(points: np.ndarray) -> np.ndarray:
@@ -202,15 +176,32 @@ def control_point_bbox(control_points: np.ndarray) -> Tuple[float, float, float,
     return float(mins[0]), float(mins[1]), float(maxs[0]), float(maxs[1])
 
 
-def build_cache_key(edge_path: Path, version_name: str, target_degree: int, min_curve_length: float) -> str:
-    payload = {
-        'edge_path': canonical_edge_cache_id(edge_path),
-        'version_name': version_name,
-        'target_degree': target_degree,
-        'min_curve_length': min_curve_length,
-        'format_version': TARGET_CACHE_FORMAT_VERSION,
-    }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode('utf-8')).hexdigest()[:16]
+def infer_cache_batch_name(edge_path: Path) -> Optional[str]:
+    edge_path = Path(edge_path)
+    for part in edge_path.parts:
+        if part.startswith('batch'):
+            return str(part)
+    return None
+
+
+def target_cache_path(edge_path: Path, cache_root: Path) -> Path:
+    edge_path = Path(edge_path)
+    cache_root = Path(cache_root)
+    base_dir = cache_root / 'bezier'
+    batch_name = infer_cache_batch_name(edge_path)
+    if batch_name is not None:
+        base_dir = base_dir / batch_name
+    return base_dir / f'{edge_path.stem}.npz'
+
+
+def graph_cache_path(edge_path: Path, cache_root: Path) -> Path:
+    edge_path = Path(edge_path)
+    cache_root = Path(cache_root)
+    base_dir = cache_root / 'graph'
+    batch_name = infer_cache_batch_name(edge_path)
+    if batch_name is not None:
+        base_dir = base_dir / batch_name
+    return base_dir / f'{edge_path.stem}_graph.npz'
 
 
 def load_binary_edge_annotation(edge_path: Path) -> np.ndarray:
@@ -304,9 +295,8 @@ def extract_cubic_targets(edge_path: Path, version_name: str, target_degree: int
     }
 
 def ensure_target_cache(edge_path: Path, cache_root: Path, version_name: str, target_degree: int = 5, min_curve_length: float = 3.0) -> Path:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    cache_key = build_cache_key(edge_path, version_name, target_degree, min_curve_length)
-    cache_path = cache_root / f'{edge_path.stem}_{cache_key}.npz'
+    cache_path = target_cache_path(edge_path=edge_path, cache_root=cache_root)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return cache_path
     payload = extract_cubic_targets(edge_path, version_name, target_degree=target_degree, min_curve_length=min_curve_length)

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from edge_datasets.laion_synthetic_dataset import _read_laion_entry_cache
-from misc_utils.bezier_target_utils import build_cache_key, load_binary_edge_annotation, load_cached_targets, load_image_array_original, sample_bezier_numpy
+from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_targets, load_image_array_original, sample_bezier_numpy, target_cache_path
 from misc_utils.visualization_utils import PALETTE
 
 
@@ -31,9 +31,7 @@ def _find_records(data_root: Path, sample_specs: Sequence[str]) -> List[Dict[str
 
 
 def _cache_path(edge_path: Path, cache_root: Path, version_name: str, target_degree: int, min_curve_length: float) -> Path:
-    batch_name = edge_path.parents[3].name
-    key = build_cache_key(edge_path=edge_path, version_name=version_name, target_degree=target_degree, min_curve_length=min_curve_length)
-    return cache_root / batch_name / f'{edge_path.stem}_{key}.npz'
+    return target_cache_path(edge_path=edge_path, cache_root=cache_root)
 
 
 def _draw_curve(ax, control_points: np.ndarray, color: str) -> None:
