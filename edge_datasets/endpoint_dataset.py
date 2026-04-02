@@ -453,11 +453,17 @@ class LaionSyntheticEndpointDataset(Dataset):
         return count
 
     def __getitem__(self, index: int) -> Dict:
-        if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
-            return self._build_item(index)
-        cap = self._current_curriculum_cap()
         dataset_len = len(self.sample_records)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
+        if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
+            try:
+                return self._build_item(index)
+            except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+                if not self.skip_missing_bezier_cache:
+                    raise
+                redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+                return self._redirected_item_once(redirected_index)
+        cap = self._current_curriculum_cap()
         if self.curriculum_global_skip_points > 0:
             try:
                 raw_point_count = self._raw_endpoint_count(index)
