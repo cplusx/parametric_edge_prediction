@@ -159,17 +159,7 @@ class ParametricEndpointDataset(Dataset):
         return redirected
 
     def _redirected_item_once(self, redirected_index: int) -> Dict:
-        try:
-            redirected_item = self._build_item(redirected_index)
-        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
-            edge_path = self.edge_paths[int(redirected_index) % len(self.edge_paths)]
-            redirected_item = _empty_endpoint_item(
-                image_size=self.image_size,
-                rgb_input=self.rgb_input,
-                sample_id=f'{edge_path.stem}_redirect_fallback',
-                edge_path=str(edge_path),
-                input_path='',
-            )
+        redirected_item = self[redirected_index]
         redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
         redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
         redirected_item['target']['curriculum_rejected_candidates'] = (
@@ -249,7 +239,13 @@ class ParametricEndpointDataset(Dataset):
 
     def __getitem__(self, index: int) -> Dict:
         if not (self.split == 'train' and self.train_augment and self.curriculum_enabled):
-            return self._build_item(index)
+            try:
+                return self._build_item(index)
+            except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
+                dataset_len = len(self.edge_paths)
+                rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
+                redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
+                return self[redirected_index]
         cap = self._current_curriculum_cap()
         dataset_len = len(self.edge_paths)
         rng = self._rng_for_index(index + self.current_epoch * max(1, dataset_len))
@@ -355,18 +351,7 @@ class LaionSyntheticEndpointDataset(Dataset):
         return redirected
 
     def _redirected_item_once(self, redirected_index: int) -> Dict:
-        try:
-            redirected_item = self._build_item(redirected_index)
-        except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
-            record = self.sample_records[int(redirected_index) % len(self.sample_records)]
-            sample_id = f"{record['batch_name']}_{record['image_id']}_redirect_fallback"
-            redirected_item = _empty_endpoint_item(
-                image_size=self.image_size,
-                rgb_input=self.rgb_input,
-                sample_id=sample_id,
-                edge_path=str(record['edge_path']),
-                input_path=str(record['image_path']),
-            )
+        redirected_item = self[redirected_index]
         redirected_item['target']['curriculum_direct_accept'] = torch.tensor(0.0, dtype=torch.float32)
         redirected_item['target']['curriculum_redirected_request'] = torch.tensor(1.0, dtype=torch.float32)
         redirected_item['target']['curriculum_rejected_candidates'] = (
@@ -459,10 +444,8 @@ class LaionSyntheticEndpointDataset(Dataset):
             try:
                 return self._build_item(index)
             except _ENDPOINT_SAMPLE_RETRY_EXCEPTIONS:
-                if not self.skip_missing_bezier_cache:
-                    raise
                 redirected_index = self._random_redirect_index(rng, int(index), dataset_len)
-                return self._redirected_item_once(redirected_index)
+                return self[redirected_index]
         cap = self._current_curriculum_cap()
         if self.curriculum_global_skip_points > 0:
             try:
