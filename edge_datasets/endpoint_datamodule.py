@@ -62,6 +62,7 @@ class EndpointDetectionDataModule(ParametricEdgeDataModule):
             augment_cfg=dict(common['augment_cfg']),
             rgb_input=bool(common['rgb_input']),
             endpoint_dedupe_distance_px=float(self.config['data'].get('endpoint_dedupe_distance_px', 2.0)),
+            skip_missing_bezier_cache=bool(dataset_cfg.get('skip_missing_bezier_cache', self.config['data'].get('skip_missing_bezier_cache', False))),
         )
 
     def _loader_kwargs(self) -> Dict:

@@ -291,6 +291,7 @@ class LaionSyntheticEndpointDataset(Dataset):
         augment_cfg: Optional[Dict],
         rgb_input: bool,
         endpoint_dedupe_distance_px: float = 2.0,
+        skip_missing_bezier_cache: bool = False,
     ) -> None:
         self.sample_records = list(sample_records)
         self.cache_root = Path(cache_root)
@@ -304,6 +305,7 @@ class LaionSyntheticEndpointDataset(Dataset):
         self.augment_cfg = dict(augment_cfg or {})
         self.rgb_input = bool(rgb_input)
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
+        self.skip_missing_bezier_cache = bool(skip_missing_bezier_cache)
         self.curriculum_enabled = False
         self.curriculum_start_points = 0
         self.curriculum_max_points = 0
@@ -372,13 +374,15 @@ class LaionSyntheticEndpointDataset(Dataset):
         )
         return redirected_item
 
-    def _target_cache_path(self, index: int) -> Path:
+    def _target_cache_path(self, index: int) -> Optional[Path]:
         cached = self._target_cache_path_cache.get(int(index))
         if cached is not None:
             return cached
         record = self.sample_records[index]
         cache_path = Path(record.get('bezier_cache_path', target_cache_path(edge_path=Path(record['edge_path']), cache_root=self.cache_root)))
         if not cache_path.exists():
+            if self.skip_missing_bezier_cache:
+                return None
             cache_path = ensure_target_cache(
                 edge_path=Path(record['edge_path']),
                 cache_root=self.cache_root,
@@ -391,7 +395,10 @@ class LaionSyntheticEndpointDataset(Dataset):
 
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
-        target_cache = load_cached_targets(self._target_cache_path(index))
+        cache_path = self._target_cache_path(index)
+        if cache_path is None:
+            raise FileNotFoundError(f'Missing bezier cache for sample {record["batch_name"]}_{record["image_id"]}')
+        target_cache = load_cached_targets(cache_path)
         image = load_image_array_original(Path(record['image_path']), rgb=self.rgb_input)
         edge_mask = load_binary_edge_annotation(Path(record['edge_path'])).astype(np.float32)[..., None] / 255.0
         curves = np.asarray(target_cache['curves'], dtype=np.float32)
@@ -433,6 +440,8 @@ class LaionSyntheticEndpointDataset(Dataset):
         if cached is not None:
             return int(cached)
         cache_path = self._target_cache_path(index)
+        if cache_path is None:
+            raise FileNotFoundError(f'Missing bezier cache for sample index {index}')
         target_data = load_cached_targets(cache_path)
         points = curves_to_unique_endpoints(
             target_data['curves'],
