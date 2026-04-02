@@ -193,6 +193,7 @@ def main() -> None:
         from callbacks.endpoint_flow_visualizer import EndpointFlowVisualizer
         visualizer = EndpointFlowVisualizer(
             val_every_n_epochs=int(config['callbacks'].get('visualization_every_n_epochs', 1)),
+            train_every_n_steps=int(config['callbacks'].get('visualization_every_n_train_steps', 1000)),
             inference_steps=int(config['callbacks'].get('visualization_inference_steps', 20)),
             guidance_scales=tuple(config['callbacks'].get('visualization_guidance_scales', [1.0, 3.0, 5.0, 7.0])),
         )

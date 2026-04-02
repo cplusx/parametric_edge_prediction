@@ -118,6 +118,7 @@ trainer:
 
 callbacks:
   visualization_every_n_epochs: 1
+  visualization_every_n_train_steps: 1000
   visualization_max_points: 300
   visualization_inference_steps: 20
   visualization_guidance_scales: [1.0, 3.0, 5.0, 7.0]

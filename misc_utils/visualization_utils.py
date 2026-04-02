@@ -7,6 +7,7 @@ import torch
 from scipy import ndimage
 
 from misc_utils.bezier_target_utils import denormalize_control_points, sample_bezier_numpy
+from misc_utils.endpoint_flow_utils import scale_points_from_flow
 
 PALETTE = ['#ff595e', '#ffca3a', '#8ac926', '#1982c4', '#6a4c93', '#f72585', '#4cc9f0', '#fb5607']
 
@@ -179,6 +180,115 @@ def render_point_grid(
         axes[row, pred_only_col].set_xlim(0, width)
         axes[row, pred_only_col].set_ylim(height, 0)
         axes[row, pred_only_col].set_aspect('equal', adjustable='box')
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+
+
+def _flow_points_to_pixels(points_flow: np.ndarray, width: int, height: int) -> np.ndarray:
+    points = scale_points_from_flow(torch.as_tensor(points_flow)).detach().cpu().numpy().astype(np.float32)
+    points[:, 0] *= float(width)
+    points[:, 1] *= float(height)
+    return points
+
+
+def _flow_velocity_to_pixels(velocity_flow: np.ndarray, width: int, height: int) -> np.ndarray:
+    velocity = (np.asarray(velocity_flow, dtype=np.float32) * 0.5).copy()
+    velocity[:, 0] *= float(width)
+    velocity[:, 1] *= float(height)
+    return velocity
+
+
+def render_flow_training_grid(
+    images: torch.Tensor,
+    targets: List[dict],
+    noisy_points: torch.Tensor,
+    gt_velocity: torch.Tensor,
+    pred_velocity: torch.Tensor,
+    timestep_indices: torch.Tensor,
+    valid_mask: torch.Tensor,
+    output_path: Path,
+    titles: Iterable[str] = ('Input', 'GT Edge', 'Noise + GT Velocity', 'Noise + Pred Velocity'),
+) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    valid_per_sample = valid_mask.detach().cpu().sum(dim=1)
+    sample_idx = int(valid_per_sample.argmax().item()) if valid_per_sample.numel() > 0 else 0
+
+    image = images[sample_idx].detach().cpu().numpy()
+    edge_mask = targets[sample_idx].get('edge_mask')
+    edge_mask_np = edge_mask.detach().cpu().numpy()[0] if edge_mask is not None else None
+    if image.shape[0] == 1:
+        image_np = image[0]
+        cmap = 'gray'
+    else:
+        image_np = np.transpose(image, (1, 2, 0))
+        cmap = None
+    height, width = image_np.shape[:2]
+
+    mask_np = valid_mask[sample_idx].detach().cpu().numpy().astype(bool)
+    noisy_np = noisy_points[sample_idx].detach().cpu().numpy()[mask_np]
+    gt_vel_np = gt_velocity[sample_idx].detach().cpu().numpy()[mask_np]
+    pred_vel_np = pred_velocity[sample_idx].detach().cpu().numpy()[mask_np]
+    noisy_px = _flow_points_to_pixels(noisy_np, width, height) if noisy_np.size else np.zeros((0, 2), dtype=np.float32)
+    gt_vel_px = _flow_velocity_to_pixels(gt_vel_np, width, height) if gt_vel_np.size else np.zeros((0, 2), dtype=np.float32)
+    pred_vel_px = _flow_velocity_to_pixels(pred_vel_np, width, height) if pred_vel_np.size else np.zeros((0, 2), dtype=np.float32)
+    timestep = int(timestep_indices[sample_idx].detach().cpu().item())
+
+    has_edge_mask = edge_mask_np is not None
+    num_cols = 4 if has_edge_mask else 3
+    fig, axes = plt.subplots(1, num_cols, figsize=(4 * num_cols, 4))
+    if num_cols == 1:
+        axes = np.asarray([axes])
+    titles = list(titles)
+
+    axes[0].imshow(image_np, cmap=cmap, vmin=0.0, vmax=1.0)
+    axes[0].axis('off')
+    axes[0].set_title(titles[0])
+
+    gt_col = 1
+    pred_col = 2
+    if has_edge_mask:
+        edge_display = _edge_overlay(image_np, edge_mask_np)
+        axes[1].imshow(edge_display, vmin=0.0, vmax=1.0)
+        axes[1].axis('off')
+        axes[1].set_title(titles[1])
+        gt_col = 2
+        pred_col = 3
+
+    for col, title in ((gt_col, titles[gt_col]), (pred_col, titles[pred_col])):
+        axes[col].imshow(image_np, cmap=cmap, vmin=0.0, vmax=1.0)
+        axes[col].axis('off')
+        axes[col].set_title(title)
+        axes[col].text(
+            0.01,
+            0.99,
+            f't={timestep}',
+            transform=axes[col].transAxes,
+            ha='left',
+            va='top',
+            color='white',
+            fontsize=10,
+            bbox={'facecolor': 'black', 'alpha': 0.65, 'pad': 2},
+        )
+
+    for ax in axes:
+        ax.set_xlim(0, width)
+        ax.set_ylim(height, 0)
+        ax.set_aspect('equal', adjustable='box')
+
+    if noisy_px.size:
+        for ax in (axes[gt_col], axes[pred_col]):
+            ax.scatter(noisy_px[:, 0], noisy_px[:, 1], s=10, c='#4cc9f0', edgecolors='none', alpha=0.9)
+        axes[gt_col].quiver(
+            noisy_px[:, 0], noisy_px[:, 1], gt_vel_px[:, 0], gt_vel_px[:, 1],
+            angles='xy', scale_units='xy', scale=1.0, color='white', width=0.003, alpha=0.9,
+        )
+        axes[pred_col].quiver(
+            noisy_px[:, 0], noisy_px[:, 1], pred_vel_px[:, 0], pred_vel_px[:, 1],
+            angles='xy', scale_units='xy', scale=1.0, color='#ff595e', width=0.003, alpha=0.9,
+        )
+
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
