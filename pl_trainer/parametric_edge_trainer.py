@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, MultiStepLR, SequentialLR
 
+from misc_utils.endpoint_flow_utils import scale_points_from_flow
 from models import build_model
 from models.losses import compute_losses
 
@@ -14,6 +15,7 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         self.config = config
         self.model = build_model(config)
         self.use_channels_last = bool(config.get('trainer', {}).get('channels_last', False))
+        self._last_flow_debug_step = -1
         if self.use_channels_last:
             self.model = self.model.to(memory_format=torch.channels_last)
         self.save_hyperparameters(config)
@@ -29,9 +31,57 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         if datamodule is not None and hasattr(datamodule, 'set_epoch'):
             datamodule.set_epoch(self.current_epoch)
 
+    def _maybe_print_endpoint_flow_debug(self, outputs: Dict, stage: str) -> None:
+        if stage != 'train' or not self.trainer.is_global_zero:
+            return
+        debug_cfg = self.config.get('debug', {})
+        every_n = int(debug_cfg.get('flow_target_print_every_n_steps', 0))
+        if every_n <= 0:
+            return
+        step = int(self.global_step)
+        if step % every_n != 0:
+            return
+        if step == self._last_flow_debug_step:
+            return
+        self._last_flow_debug_step = step
+        max_points = int(debug_cfg.get('flow_target_print_max_points', 8))
+        valid_mask = outputs['valid_mask'][0].detach().cpu().bool()
+        if valid_mask.numel() == 0 or not bool(valid_mask.any()):
+            print(f'[flow-debug] step={step} no valid matched points')
+            return
+        image_size = outputs['image_sizes'][0].detach().cpu()
+        width = float(image_size[1].item())
+        height = float(image_size[0].item())
+        point_scale = torch.tensor([width, height], dtype=torch.float32)
+        vel_scale = point_scale * 0.5
+
+        source_px = scale_points_from_flow(outputs['source_points'][0].detach().cpu()[valid_mask]) * point_scale
+        noisy_px = scale_points_from_flow(outputs['noisy_points'][0].detach().cpu()[valid_mask]) * point_scale
+        target_px = scale_points_from_flow(outputs['target_points'][0].detach().cpu()[valid_mask]) * point_scale
+        target_vel_px = outputs['target_velocity'][0].detach().cpu()[valid_mask] * vel_scale
+        pred_vel_px = outputs['pred_velocity'][0].detach().cpu()[valid_mask] * vel_scale
+        timestep = int(outputs['timestep_indices'][0].detach().cpu().item())
+
+        print(f'[flow-debug] step={step} t={timestep} valid={int(valid_mask.sum().item())} size=({int(height)},{int(width)})')
+        limit = min(max_points, int(source_px.shape[0]))
+        for idx in range(limit):
+            src = source_px[idx].tolist()
+            noisy = noisy_px[idx].tolist()
+            tgt = target_px[idx].tolist()
+            tgt_vel = target_vel_px[idx].tolist()
+            pred_vel = pred_vel_px[idx].tolist()
+            print(
+                f'  idx={idx:02d} src=({src[0]:.1f},{src[1]:.1f}) '
+                f'noisy=({noisy[0]:.1f},{noisy[1]:.1f}) '
+                f'tgt=({tgt[0]:.1f},{tgt[1]:.1f}) '
+                f'gt_vel=({tgt_vel[0]:.1f},{tgt_vel[1]:.1f}) '
+                f'pred_vel=({pred_vel[0]:.1f},{pred_vel[1]:.1f})'
+            )
+
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
         outputs = self(batch['images'], targets=batch['targets'])
+        self._maybe_print_endpoint_flow_debug(outputs, stage)
         sync_dist = stage != 'train'
         if 'pred_group_count' in outputs:
             self.log(f'{stage}/group_count', float(outputs['pred_group_count']), batch_size=batch['images'].shape[0], sync_dist=sync_dist)

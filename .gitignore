@@ -218,3 +218,5 @@ edge_data/
 .DS_Store
 edge_data
 wandb
+experiments
+local_data

@@ -1,9 +1,10 @@
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from PIL import Image
 from scipy import ndimage
 
 from misc_utils.bezier_target_utils import denormalize_control_points, sample_bezier_numpy
@@ -208,6 +209,7 @@ def render_flow_training_grid(
     timestep_indices: torch.Tensor,
     valid_mask: torch.Tensor,
     output_path: Path,
+    num_train_timesteps: int = 1000,
     titles: Iterable[str] = ('Input', 'GT Edge', 'Noise + GT Velocity', 'Noise + Pred Velocity'),
 ) -> None:
     output_path = Path(output_path)
@@ -231,9 +233,10 @@ def render_flow_training_grid(
     gt_vel_np = gt_velocity[sample_idx].detach().cpu().numpy()[mask_np]
     pred_vel_np = pred_velocity[sample_idx].detach().cpu().numpy()[mask_np]
     noisy_px = _flow_points_to_pixels(noisy_np, width, height) if noisy_np.size else np.zeros((0, 2), dtype=np.float32)
-    gt_vel_px = _flow_velocity_to_pixels(gt_vel_np, width, height) if gt_vel_np.size else np.zeros((0, 2), dtype=np.float32)
-    pred_vel_px = _flow_velocity_to_pixels(pred_vel_np, width, height) if pred_vel_np.size else np.zeros((0, 2), dtype=np.float32)
     timestep = int(timestep_indices[sample_idx].detach().cpu().item())
+    sigma = (float(timestep) + 0.5) / float(max(int(num_train_timesteps), 1))
+    gt_vel_px = _flow_velocity_to_pixels(gt_vel_np * sigma, width, height) if gt_vel_np.size else np.zeros((0, 2), dtype=np.float32)
+    pred_vel_px = _flow_velocity_to_pixels(pred_vel_np * sigma, width, height) if pred_vel_np.size else np.zeros((0, 2), dtype=np.float32)
 
     has_edge_mask = edge_mask_np is not None
     num_cols = 4 if has_edge_mask else 3
@@ -292,3 +295,107 @@ def render_flow_training_grid(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
+
+
+def render_point_trajectory_animation(
+    images: torch.Tensor,
+    targets: List[dict],
+    trajectory_points: torch.Tensor,
+    output_gif_path: Path,
+    output_mp4_path: Optional[Path] = None,
+    title: str = 'Validation Flow Trajectory',
+    fps: int = 5,
+) -> None:
+    output_gif_path = Path(output_gif_path)
+    output_gif_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_mp4_path is not None:
+        output_mp4_path = Path(output_mp4_path)
+        output_mp4_path.parent.mkdir(parents=True, exist_ok=True)
+
+    batch_idx = 0
+    if targets:
+        batch_idx = int(max(range(len(targets)), key=lambda i: int(targets[i]['points'].shape[0])))
+
+    image = images[batch_idx].detach().cpu().numpy()
+    target_points = targets[batch_idx]['points'].detach().cpu().numpy()
+    edge_mask = targets[batch_idx].get('edge_mask')
+    edge_mask_np = edge_mask.detach().cpu().numpy()[0] if edge_mask is not None else None
+    if image.shape[0] == 1:
+        image_np = np.repeat(image[0][..., None], 3, axis=2)
+    else:
+        image_np = np.transpose(image, (1, 2, 0))
+    background = _edge_overlay(image_np, edge_mask_np) if edge_mask_np is not None else image_np
+    height, width = image_np.shape[:2]
+
+    trajectory_np = trajectory_points[batch_idx].detach().cpu().numpy()
+    num_frames = int(trajectory_np.shape[0])
+    frames: List[Image.Image] = []
+
+    gt_px = target_points.astype(np.float32).copy()
+    if gt_px.size:
+        gt_px[:, 0] *= float(width)
+        gt_px[:, 1] *= float(height)
+
+    for frame_idx in range(num_frames):
+        fig, ax = plt.subplots(1, 1, figsize=(5.5, 5.5))
+        ax.imshow(background, vmin=0.0, vmax=1.0)
+        ax.axis('off')
+        ax.set_xlim(0, width)
+        ax.set_ylim(height, 0)
+        ax.set_aspect('equal', adjustable='box')
+        ax.set_title(title)
+        ax.text(
+            0.01,
+            0.99,
+            f'step={frame_idx}/{num_frames - 1}',
+            transform=ax.transAxes,
+            ha='left',
+            va='top',
+            color='white',
+            fontsize=10,
+            bbox={'facecolor': 'black', 'alpha': 0.65, 'pad': 2},
+        )
+
+        current = trajectory_np[frame_idx].astype(np.float32).copy()
+        current[:, 0] *= float(width)
+        current[:, 1] *= float(height)
+
+        history = trajectory_np[: frame_idx + 1].astype(np.float32).copy()
+        history[..., 0] *= float(width)
+        history[..., 1] *= float(height)
+
+        if gt_px.size:
+            ax.scatter(gt_px[:, 0], gt_px[:, 1], s=22, c='#ffca3a', edgecolors='#ff595e', linewidths=0.6, alpha=0.95, label='GT')
+
+        for point_idx in range(history.shape[1]):
+            trail = history[:, point_idx, :]
+            ax.plot(trail[:, 0], trail[:, 1], color='white', linewidth=0.8, alpha=0.28)
+
+        ax.scatter(current[:, 0], current[:, 1], s=16, c='#4cc9f0', edgecolors='none', alpha=0.95, label='Current')
+        fig.tight_layout()
+        fig.canvas.draw()
+        rgb = np.asarray(fig.canvas.buffer_rgba())[..., :3]
+        frames.append(Image.fromarray(rgb))
+        plt.close(fig)
+
+    if not frames:
+        return
+    frames[0].save(
+        output_gif_path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=max(int(1000 / max(int(fps), 1)), 1),
+        loop=0,
+    )
+
+    if output_mp4_path is not None:
+        try:
+            import imageio.v2 as imageio
+
+            imageio.mimsave(
+                output_mp4_path,
+                [np.asarray(frame) for frame in frames],
+                fps=max(int(fps), 1),
+            )
+        except Exception:
+            pass

@@ -2,13 +2,13 @@ from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 import numpy as np
+import pytorch_lightning as pl
 import torch
 from torch.utils.data import Dataset
 
 from edge_datasets.graph_pipeline import prepare_eval_endpoint_sample_with_mask
 from edge_datasets.endpoint_dataset import endpoint_detection_collate
 from misc_utils.bezier_target_utils import load_binary_edge_annotation, load_cached_targets, load_image_array_original
-from misc_utils.endpoint_target_utils import curves_to_unique_endpoints
 
 
 def _build_endpoint_item(
@@ -53,6 +53,7 @@ class SingleLaionEndpointFlowOverfitDataset(Dataset):
         rgb_input: bool = True,
         endpoint_dedupe_distance_px: float = 2.0,
         repeats: int = 800,
+        fixed_source_seed: Optional[int] = None,
     ) -> None:
         self.image_path = Path(image_path)
         self.edge_path = Path(edge_path)
@@ -61,6 +62,7 @@ class SingleLaionEndpointFlowOverfitDataset(Dataset):
         self.rgb_input = bool(rgb_input)
         self.endpoint_dedupe_distance_px = float(endpoint_dedupe_distance_px)
         self.repeats = int(repeats)
+        self.fixed_source_seed = None if fixed_source_seed is None else int(fixed_source_seed)
 
         target_cache = load_cached_targets(self.bezier_cache_path)
         image = load_image_array_original(self.image_path, rgb=self.rgb_input)
@@ -73,17 +75,7 @@ class SingleLaionEndpointFlowOverfitDataset(Dataset):
             image_size=self.image_size,
             dedupe_distance_px=self.endpoint_dedupe_distance_px,
         )
-        points = np.asarray(
-            target_data.get(
-                'points',
-                curves_to_unique_endpoints(
-                    target_data['curves'],
-                    image_size=target_data['image_size'],
-                    dedupe_distance_px=self.endpoint_dedupe_distance_px,
-                ),
-            ),
-            dtype=np.float32,
-        )
+        points = np.asarray(target_data.get('points', np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
         sample_id = f'{self.edge_path.parent.parent.parent.parent.name}_{self.edge_path.stem}'
         self.item = _build_endpoint_item(
             image_hwc=image_hwc,
@@ -93,6 +85,10 @@ class SingleLaionEndpointFlowOverfitDataset(Dataset):
             edge_path=str(self.edge_path),
             input_path=str(self.image_path),
         )
+        if self.fixed_source_seed is not None:
+            rng = np.random.default_rng(self.fixed_source_seed)
+            fixed_source = rng.random((points.shape[0], 2), dtype=np.float32)
+            self.item['target']['fixed_source_points'] = torch.from_numpy(fixed_source).float()
 
     def __len__(self) -> int:
         return self.repeats
@@ -108,7 +104,7 @@ class SingleLaionEndpointFlowOverfitDataset(Dataset):
         }
 
 
-class SingleLaionEndpointFlowOverfitDataModule:
+class SingleLaionEndpointFlowOverfitDataModule(pl.LightningDataModule):
     def __init__(
         self,
         *,
@@ -119,6 +115,7 @@ class SingleLaionEndpointFlowOverfitDataModule:
         num_workers: int = 0,
         pin_memory: bool = True,
     ) -> None:
+        super().__init__()
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.test_dataset = val_dataset

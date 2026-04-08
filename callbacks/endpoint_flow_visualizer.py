@@ -4,7 +4,7 @@ from typing import Iterable, Sequence
 import pytorch_lightning as pl
 import torch
 
-from misc_utils.visualization_utils import render_flow_training_grid, render_point_grid
+from misc_utils.visualization_utils import render_flow_training_grid, render_point_grid, render_point_trajectory_animation
 from models.pipelines.endpoint_flow_pipeline import EndpointFlowPipeline
 
 
@@ -13,14 +13,18 @@ class EndpointFlowVisualizer(pl.Callback):
         self,
         val_every_n_epochs: int = 1,
         train_every_n_steps: int = 1000,
+        val_every_n_steps: int | None = None,
         inference_steps: int = 20,
         guidance_scales: Sequence[float] = (1.0, 3.0, 5.0, 7.0),
     ) -> None:
         super().__init__()
         self.val_every_n_epochs = int(val_every_n_epochs)
         self.train_every_n_steps = int(train_every_n_steps)
+        self.val_every_n_steps = int(val_every_n_steps) if val_every_n_steps is not None else int(train_every_n_steps)
         self.inference_steps = int(inference_steps)
         self.guidance_scales = tuple(float(scale) for scale in guidance_scales)
+        self._last_val_render_step = -1
+        self._last_train_render_step = -1
 
     @staticmethod
     def _wandb_log_image(trainer, key: str, image_path: Path, caption: str, global_step: int, epoch: int) -> None:
@@ -67,6 +71,26 @@ class EndpointFlowVisualizer(pl.Callback):
             epoch=trainer.current_epoch,
         )
 
+    @staticmethod
+    def _wandb_log_video(trainer, key: str, media_path: Path, caption: str, global_step: int, epoch: int) -> None:
+        media_path = Path(media_path)
+        if not media_path.exists():
+            return
+        loggers = getattr(trainer, 'loggers', None)
+        if loggers is None:
+            single_logger = getattr(trainer, 'logger', None)
+            loggers = [] if single_logger is None else [single_logger]
+        for logger in loggers:
+            if logger is None or logger.__class__.__name__ != 'WandbLogger':
+                continue
+            import wandb
+
+            logger.experiment.log({
+                key: wandb.Video(str(media_path), fps=5, format=media_path.suffix.lstrip('.')),
+                'trainer/current_epoch': epoch,
+                'trainer/global_step': global_step,
+            })
+
     def _predict_train_flow(self, pl_module, batch):
         was_training = pl_module.training
         pl_module.eval()
@@ -79,6 +103,8 @@ class EndpointFlowVisualizer(pl.Callback):
     def _render_train_flow(self, trainer, batch, outputs, token: str) -> None:
         vis_dir = Path(trainer.default_root_dir) / 'visualizations'
         output_path = vis_dir / f'train_{token}_flow_vectors.jpg'
+        lightning_module = getattr(trainer, 'lightning_module', None)
+        num_train_timesteps = int(getattr(getattr(lightning_module, 'model', None), 'num_train_timesteps', 1000))
         render_flow_training_grid(
             batch['images'],
             batch['targets'],
@@ -88,6 +114,7 @@ class EndpointFlowVisualizer(pl.Callback):
             outputs['timestep_indices'].detach().cpu(),
             outputs['valid_mask'].detach().cpu().bool(),
             output_path,
+            num_train_timesteps=num_train_timesteps,
             titles=('Input', 'GT Edge', 'Noise + GT Velocity', 'Noise + Pred Velocity'),
         )
         self._wandb_log_image(
@@ -102,11 +129,16 @@ class EndpointFlowVisualizer(pl.Callback):
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if trainer.sanity_checking or not trainer.is_global_zero:
             return
-        if batch_idx != 0 or self.val_every_n_epochs <= 0:
+        if batch_idx != 0:
             return
-        completed_epoch = trainer.current_epoch + 1
-        if completed_epoch % self.val_every_n_epochs != 0:
+        if self.val_every_n_steps <= 0:
             return
+        step = int(trainer.global_step)
+        if step <= 0 or step % self.val_every_n_steps != 0:
+            return
+        if step == self._last_val_render_step:
+            return
+        self._last_val_render_step = step
         was_training = pl_module.training
         pl_module.eval()
         pipeline = self._build_pipeline(pl_module)
@@ -119,13 +151,34 @@ class EndpointFlowVisualizer(pl.Callback):
                     num_points=batch_max_points,
                     guidance_scale=guidance_scale,
                 )
+                token = f'step_{step:07d}'
                 self._render_one(
                     trainer,
                     batch,
                     [points.detach().cpu() for points in result.selected_points],
                     'val',
-                    f'epoch_{completed_epoch:03d}',
+                    token,
                     guidance_scale,
+                )
+                vis_dir = Path(trainer.default_root_dir) / 'visualizations'
+                gif_path = vis_dir / f'val_{token}_cfg{int(guidance_scale):02d}_trajectory.gif'
+                mp4_path = vis_dir / f'val_{token}_cfg{int(guidance_scale):02d}_trajectory.mp4'
+                render_point_trajectory_animation(
+                    batch['images'],
+                    batch['targets'],
+                    result.trajectory.detach().cpu(),
+                    gif_path,
+                    output_mp4_path=mp4_path,
+                    title=f'Validation Trajectory (cfg={guidance_scale:g})',
+                    fps=5,
+                )
+                self._wandb_log_video(
+                    trainer,
+                    f'visualizations/val_flow_cfg_{guidance_scale:g}_trajectory',
+                    gif_path,
+                    f'val:{token}:cfg{guidance_scale:g}:trajectory',
+                    global_step=trainer.global_step,
+                    epoch=trainer.current_epoch,
                 )
         if was_training:
             pl_module.train()
@@ -135,7 +188,11 @@ class EndpointFlowVisualizer(pl.Callback):
             return
         if self.train_every_n_steps <= 0:
             return
-        if trainer.global_step <= 0 or trainer.global_step % self.train_every_n_steps != 0:
+        step = int(trainer.global_step)
+        if step <= 0 or step % self.train_every_n_steps != 0:
             return
+        if step == self._last_train_render_step:
+            return
+        self._last_train_render_step = step
         train_outputs = self._predict_train_flow(pl_module, batch)
-        self._render_train_flow(trainer, batch, train_outputs, f'step_{trainer.global_step:07d}')
+        self._render_train_flow(trainer, batch, train_outputs, f'step_{step:07d}')

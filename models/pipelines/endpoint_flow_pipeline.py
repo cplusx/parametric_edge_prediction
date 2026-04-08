@@ -19,6 +19,7 @@ except ImportError as exc:  # pragma: no cover - exercised on cluster env
 class EndpointFlowPipelineOutput(BaseOutput):
     points: torch.FloatTensor
     selected_points: List[torch.FloatTensor]
+    trajectory: torch.FloatTensor
 
 
 class EndpointFlowPipeline(DiffusionPipeline):
@@ -50,11 +51,12 @@ class EndpointFlowPipeline(DiffusionPipeline):
             generator=generator,
         )
         latents = scale_points_to_flow(source_points_ext)
-        tau_schedule = torch.linspace(0.0, 1.0, steps=int(num_inference_steps) + 1, device=device, dtype=images.dtype)
+        trajectory = [source_points_ext.detach().clone()]
+        sigma_schedule = torch.linspace(1.0, 0.0, steps=int(num_inference_steps) + 1, device=device, dtype=images.dtype)
         for step_idx in range(int(num_inference_steps)):
-            tau = tau_schedule[step_idx]
-            next_tau = tau_schedule[step_idx + 1]
-            timestep = tau * float(max(self.model.num_train_timesteps - 1, 1))
+            sigma = sigma_schedule[step_idx]
+            next_sigma = sigma_schedule[step_idx + 1]
+            timestep = sigma * float(max(self.model.num_train_timesteps - 1, 1))
             if guidance_scale != 1.0:
                 model_input = torch.cat([latents, latents], dim=0)
                 image_input = torch.cat([torch.zeros_like(images), images], dim=0)
@@ -66,14 +68,17 @@ class EndpointFlowPipeline(DiffusionPipeline):
                 timestep_input = timestep.expand(batch_size).to(device=device, dtype=images.dtype)
                 model_output = self.model.predict(latents, timestep_input, images)
                 velocity = model_output.sample
-            step_size = (next_tau - tau).to(dtype=latents.dtype)
+            step_size = (sigma - next_sigma).to(dtype=latents.dtype)
             latents = latents + step_size * velocity
+            trajectory.append(scale_points_from_flow(latents).clamp(0.0, 1.0).detach().clone())
 
         points = scale_points_from_flow(latents).clamp(0.0, 1.0)
+        trajectory_tensor = torch.stack(trajectory, dim=1)
         selected_points = select_predicted_points(points)
         if not return_dict:
-            return points, selected_points
+            return points, selected_points, trajectory_tensor
         return EndpointFlowPipelineOutput(
             points=points,
             selected_points=selected_points,
+            trajectory=trajectory_tensor,
         )

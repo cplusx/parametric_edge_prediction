@@ -52,6 +52,15 @@ def build_graph(skeleton, connectivity=2):
                     ny, nx_ = y + dy, x + dx
                     if 0 <= ny < rows and 0 <= nx_ < cols:
                         if skeleton[ny, nx_]:
+                            # For diagonal neighbors, avoid adding the diagonal "shortcut"
+                            # when the same connection is already represented by an
+                            # orthogonal staircase step. Otherwise a smooth rasterized arc
+                            # creates many tiny triangles, which later turn into false
+                            # junctions and fragment one continuous contour into many short
+                            # paths.
+                            if dy != 0 and dx != 0:
+                                if skeleton[y, nx_] or skeleton[ny, x]:
+                                    continue
                             G.add_edge((y, x), (ny, nx_))
     return G
 
@@ -289,6 +298,81 @@ def identify_junctions_and_endpoints(G):
     """
     junctions = [node for node, degree in G.degree() if degree >=3]
     endpoints = [node for node, degree in G.degree() if degree ==1]
+    return junctions, endpoints
+
+
+def _walk_branch_direction(G, start_node, next_node, max_steps=6):
+    start = np.asarray(start_node, dtype=np.float64)
+    prev_node = start_node
+    current_node = next_node
+    steps = 1
+    while steps < max_steps:
+        current_degree = G.degree(current_node)
+        if current_degree != 2:
+            break
+        next_candidates = [node for node in G.neighbors(current_node) if node != prev_node]
+        if not next_candidates:
+            break
+        prev_node, current_node = current_node, next_candidates[0]
+        steps += 1
+    end = np.asarray(current_node, dtype=np.float64)
+    direction = end - start
+    norm = np.linalg.norm(direction)
+    if norm <= 1e-6:
+        direction = np.asarray(next_node, dtype=np.float64) - start
+        norm = np.linalg.norm(direction)
+    if norm <= 1e-6:
+        return None
+    return direction / norm
+
+
+def _branch_angle_mod_pi(direction):
+    angle = float(np.arctan2(direction[0], direction[1]))
+    if angle < 0:
+        angle += np.pi
+    if angle >= np.pi:
+        angle -= np.pi
+    return angle
+
+
+def identify_semantic_junctions_and_endpoints(
+    G,
+    branch_lookahead=6,
+    merge_angle_deg=28.0,
+):
+    endpoints = [node for node, degree in G.degree() if degree == 1]
+    junctions = []
+    merge_angle = np.deg2rad(float(merge_angle_deg))
+    for node, degree in G.degree():
+        if degree < 3:
+            continue
+        branch_angles = []
+        for neighbor in G.neighbors(node):
+            direction = _walk_branch_direction(
+                G,
+                node,
+                neighbor,
+                max_steps=int(branch_lookahead),
+            )
+            if direction is None:
+                continue
+            branch_angles.append(_branch_angle_mod_pi(direction))
+        if len(branch_angles) < 3:
+            continue
+        branch_angles.sort()
+        groups = []
+        for angle in branch_angles:
+            matched = False
+            for group in groups:
+                delta = abs(angle - group)
+                delta = min(delta, np.pi - delta)
+                if delta <= merge_angle:
+                    matched = True
+                    break
+            if not matched:
+                groups.append(angle)
+        if len(groups) >= 3:
+            junctions.append(node)
     return junctions, endpoints
 
 def trace_edges(G, junctions, endpoints, height, width):
@@ -1550,6 +1634,25 @@ def fit_paths_with_piecewise_bezier(
     for path in paths:
         path = np.asarray(path, dtype=np.float64)
         if path_length(path) < min_path_length_for_bezier:
+            # Keep very short traced paths as a single low-degree segment instead of
+            # dropping them outright. On staircase-like arcs, the graph tracer can
+            # still split one visually continuous contour into tiny subpaths; if we
+            # remove those fragments, the final rasterized Bezier result develops
+            # small gaps even though the source edge stayed connected.
+            if len(path) >= 2:
+                short_fit = choose_best_bezier_fit(
+                    path,
+                    max_degree=min(max_degree, max(1, len(path) - 1)),
+                    mean_error_threshold=max(mean_error_threshold, 1.5),
+                    max_error_threshold=max(max_error_threshold, 4.0),
+                )
+                if short_fit is not None:
+                    short_fit["points"] = np.asarray(path, dtype=np.float64)
+                    fitted_paths.append({
+                        "original_points": path,
+                        "segments": [short_fit],
+                    })
+                    continue
             dropped_paths.append(path)
             continue
         segments = fit_polyline_with_piecewise_bezier(
@@ -1719,7 +1822,6 @@ def visualize_colored_segments(edge_map, fitted_paths, output_path, samples_per_
             color = palette[color_idx]
             plt.plot(curve_points[:, 1], curve_points[:, 0], color=color, linewidth=1.6)
 
-    plt.gca().invert_yaxis()
     plt.axis("off")
     plt.title("Colored Bezier overlap on binary edge map")
     plt.tight_layout()

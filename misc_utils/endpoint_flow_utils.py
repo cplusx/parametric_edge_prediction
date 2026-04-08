@@ -27,6 +27,9 @@ def sample_uniform_points(
 def build_uniform_flow_batch(
     source_points: torch.Tensor,
     targets: Sequence[dict],
+    *,
+    match_p: float = 2.0,
+    pixel_space: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if not targets:
         raise ValueError('targets must be non-empty')
@@ -39,7 +42,19 @@ def build_uniform_flow_batch(
             continue
         count = min(int(points.shape[0]), num_points)
         points = points[:count]
-        cost = torch.cdist(source_points[batch_idx, :count], points, p=1)
+        source_for_cost = source_points[batch_idx, :count]
+        target_for_cost = points
+        if pixel_space:
+            image_size = target.get('image_size')
+            if image_size is None:
+                raise ValueError('target image_size is required for pixel-space endpoint flow matching')
+            image_size = image_size.to(device=source_points.device, dtype=source_points.dtype)
+            height = image_size[0].clamp_min(1.0)
+            width = image_size[1].clamp_min(1.0)
+            scale = torch.stack((width, height))
+            source_for_cost = source_for_cost * scale[None, :]
+            target_for_cost = target_for_cost * scale[None, :]
+        cost = torch.cdist(source_for_cost, target_for_cost, p=match_p)
         row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
         if len(row_ind) == 0:
             continue

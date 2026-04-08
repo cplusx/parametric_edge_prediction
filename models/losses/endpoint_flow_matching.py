@@ -18,6 +18,7 @@ class EndpointFlowMatchingLossComputer:
         self.config = config
         loss_cfg = config.get('loss', {})
         self.velocity_weight = float(loss_cfg.get('velocity_weight', 1.0))
+        self.velocity_in_pixel_space = bool(loss_cfg.get('velocity_in_pixel_space', True))
 
     def __call__(self, outputs: Dict, targets) -> Dict:
         del targets
@@ -39,7 +40,14 @@ class EndpointFlowMatchingLossComputer:
                 log_values[key] = zero.detach()
             return log_values
         valid_mask = outputs['valid_mask'].to(dtype=outputs['pred_velocity'].dtype)
-        per_point_velocity = (outputs['pred_velocity'] - outputs['target_velocity']).pow(2).mean(dim=-1)
+        pred_velocity = outputs['pred_velocity']
+        target_velocity = outputs['target_velocity']
+        if self.velocity_in_pixel_space:
+            image_sizes = outputs['image_sizes'].to(device=pred_velocity.device, dtype=pred_velocity.dtype)
+            velocity_scale = torch.stack((image_sizes[:, 1], image_sizes[:, 0]), dim=-1).unsqueeze(1) * 0.5
+            pred_velocity = pred_velocity * velocity_scale
+            target_velocity = target_velocity * velocity_scale
+        per_point_velocity = (pred_velocity - target_velocity).pow(2).mean(dim=-1)
         valid_count = valid_mask.sum(dim=1).clamp_min(1.0)
         per_sample_velocity = (per_point_velocity * valid_mask).sum(dim=1) / valid_count
         velocity_loss = per_sample_velocity.mean()

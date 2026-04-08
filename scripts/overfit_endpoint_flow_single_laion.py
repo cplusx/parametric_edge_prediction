@@ -18,6 +18,58 @@ from pl_trainer.parametric_edge_trainer import ParametricEdgeLightningModule
 from train import resolve_runtime_scaling
 
 
+class StdoutProgressCallback(pl.Callback):
+    def __init__(self, every_n_steps: int = 10) -> None:
+        super().__init__()
+        self.every_n_steps = max(1, int(every_n_steps))
+        self._last_train_print_step = -1
+        self._last_val_print_step = -1
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        print(
+            f"[overfit] fit_start max_epochs={trainer.max_epochs} "
+            f"train_batches={trainer.num_training_batches} val_batches={trainer.num_val_batches}",
+            flush=True,
+        )
+
+    def on_train_batch_end(
+        self,
+        trainer: pl.Trainer,
+        pl_module: pl.LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ) -> None:
+        step = int(trainer.global_step)
+        if step == 0 or step % self.every_n_steps != 0:
+            return
+        if step == self._last_train_print_step:
+            return
+        self._last_train_print_step = step
+        loss = trainer.callback_metrics.get('train/loss')
+        lr = None
+        if trainer.optimizers:
+            lr = trainer.optimizers[0].param_groups[0].get('lr')
+        loss_str = f"{float(loss):.6f}" if loss is not None else "nan"
+        lr_str = f"{float(lr):.6e}" if lr is not None else "nan"
+        print(
+            f"[overfit] train step={step} epoch={trainer.current_epoch} loss={loss_str} lr={lr_str}",
+            flush=True,
+        )
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        step = int(trainer.global_step)
+        if step == self._last_val_print_step:
+            return
+        self._last_val_print_step = step
+        val_loss = trainer.callback_metrics.get('val_loss_main')
+        val_str = f"{float(val_loss):.6f}" if val_loss is not None else "nan"
+        print(
+            f"[overfit] val_end step={step} epoch={trainer.current_epoch} val_loss_main={val_str}",
+            flush=True,
+        )
+
+
 def _read_first_cached_record(entry_cache_path: Path, sample_key: Optional[str] = None) -> Dict[str, str]:
     with entry_cache_path.open('r', encoding='utf-8') as handle:
         for raw_line in handle:
@@ -55,10 +107,16 @@ def main() -> None:
     parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--effective-batch-size', type=int, default=64)
     parser.add_argument('--max-epochs', type=int, default=10)
+    parser.add_argument('--accelerator', default='auto')
     parser.add_argument('--devices', type=int, default=1)
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--train-vis-every', type=int, default=100)
     parser.add_argument('--val-vis-every', type=int, default=1)
+    parser.add_argument('--val-every-steps', type=int, default=100)
+    parser.add_argument('--debug-print-every', type=int, default=100)
+    parser.add_argument('--debug-print-max-points', type=int, default=8)
+    parser.add_argument('--print-every', type=int, default=10)
+    parser.add_argument('--fixed-source-seed', type=int, default=None)
     args = parser.parse_args()
 
     record = _read_first_cached_record(Path(args.entry_cache), sample_key=args.sample_key)
@@ -69,6 +127,7 @@ def main() -> None:
     config['data']['num_workers'] = int(args.num_workers)
     config['trainer']['default_root_dir'] = str(Path(args.output_dir))
     config['trainer']['max_epochs'] = int(args.max_epochs)
+    config['trainer']['accelerator'] = str(args.accelerator)
     config['trainer']['devices'] = int(args.devices)
     config['trainer']['strategy'] = 'auto'
     config['trainer']['effective_batch_size'] = int(args.effective_batch_size)
@@ -80,6 +139,9 @@ def main() -> None:
     config['callbacks']['visualization_every_n_train_steps'] = int(args.train_vis_every)
     config['callbacks']['visualization_every_n_epochs'] = int(args.val_vis_every)
     config['logging']['wandb']['enabled'] = False
+    config.setdefault('debug', {})
+    config['debug']['flow_target_print_every_n_steps'] = int(args.debug_print_every)
+    config['debug']['flow_target_print_max_points'] = int(args.debug_print_max_points)
     config = resolve_runtime_scaling(config)
 
     if int(config.get('data', {}).get('num_workers', 0)) > 0:
@@ -101,6 +163,10 @@ def main() -> None:
         'val_repeats': int(args.val_repeats),
         'max_epochs': int(args.max_epochs),
         'train_vis_every': int(args.train_vis_every),
+        'val_every_steps': int(args.val_every_steps),
+        'debug_print_every': int(args.debug_print_every),
+        'print_every': int(args.print_every),
+        'fixed_source_seed': None if args.fixed_source_seed is None else int(args.fixed_source_seed),
     }, indent=2))
 
     train_dataset = SingleLaionEndpointFlowOverfitDataset(
@@ -111,6 +177,7 @@ def main() -> None:
         rgb_input=bool(config['data'].get('rgb_input', True)),
         endpoint_dedupe_distance_px=float(config['data'].get('endpoint_dedupe_distance_px', 2.0)),
         repeats=int(args.train_repeats),
+        fixed_source_seed=args.fixed_source_seed,
     )
     val_dataset = SingleLaionEndpointFlowOverfitDataset(
         image_path=Path(record['image_path']),
@@ -120,6 +187,7 @@ def main() -> None:
         rgb_input=bool(config['data'].get('rgb_input', True)),
         endpoint_dedupe_distance_px=float(config['data'].get('endpoint_dedupe_distance_px', 2.0)),
         repeats=int(args.val_repeats),
+        fixed_source_seed=args.fixed_source_seed,
     )
     datamodule = SingleLaionEndpointFlowOverfitDataModule(
         train_dataset=train_dataset,
@@ -159,12 +227,18 @@ def main() -> None:
         limit_train_batches=config['trainer'].get('limit_train_batches', 1.0),
         limit_val_batches=config['trainer'].get('limit_val_batches', 1.0),
         gradient_clip_val=float(config['trainer'].get('gradient_clip_val', 0.1)),
-        callbacks=[checkpoint, LearningRateMonitor(logging_interval='epoch'), visualizer],
+        callbacks=[
+            checkpoint,
+            LearningRateMonitor(logging_interval='epoch'),
+            visualizer,
+            StdoutProgressCallback(every_n_steps=int(args.print_every)),
+        ],
         logger=loggers,
         deterministic=bool(config['trainer'].get('deterministic', False)),
         benchmark=bool(config['trainer'].get('benchmark', True)),
         num_sanity_val_steps=int(config['trainer'].get('num_sanity_val_steps', 0)),
-        check_val_every_n_epoch=int(config['trainer'].get('check_val_every_n_epoch', 1)),
+        check_val_every_n_epoch=None,
+        val_check_interval=int(args.val_every_steps),
         use_distributed_sampler=False,
     )
     trainer.fit(model, datamodule=datamodule)

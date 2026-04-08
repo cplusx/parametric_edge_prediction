@@ -6,7 +6,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 
 from misc_utils.endpoint_flow_utils import build_uniform_flow_batch, sample_uniform_points, scale_points_to_flow
-from models.dab_curve_detr import DABEncoder, DABResNetBackbone
+from models.dab_curve_detr import DABEncoder, DABResNetBackbone, gen_sineembed_for_curve_position
 
 try:
     from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -101,6 +101,8 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         cond_drop_rate: float = 0.1,
         num_train_timesteps: int = 1000,
         scheduler_shift: float = 1.0,
+        matching_cost_p: float = 2.0,
+        matching_use_pixel_space: bool = True,
         curriculum_start_points: int = 150,
         curriculum_max_points: int = 250,
         curriculum_points_per_epoch: int = 10,
@@ -112,6 +114,8 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         self.num_train_timesteps = int(num_train_timesteps)
         self.cond_drop_rate = float(cond_drop_rate)
         self.gradient_checkpointing = bool(gradient_checkpointing)
+        self.matching_cost_p = float(matching_cost_p)
+        self.matching_use_pixel_space = bool(matching_use_pixel_space)
         self.curriculum_start_points = int(curriculum_start_points)
         self.curriculum_max_points = int(curriculum_max_points)
         self.curriculum_points_per_epoch = int(curriculum_points_per_epoch)
@@ -137,7 +141,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             num_layers=int(num_encoder_layers),
             gradient_checkpointing=bool(gradient_checkpointing),
         )
-        self.point_proj = nn.Linear(2, self.hidden_dim)
+        self.point_proj = nn.Linear(self.hidden_dim + 2, self.hidden_dim)
         self.time_proj = Timesteps(self.hidden_dim, flip_sin_to_cos=True, downscale_freq_shift=0)
         self.time_embed = TimestepEmbedding(self.hidden_dim, self.hidden_dim)
         self.decoder_layers = nn.ModuleList(
@@ -205,7 +209,8 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             timestep = timestep[None].expand(sample.shape[0])
         timestep_proj = self.time_proj(timestep)
         timestep_emb = self.time_embed(timestep_proj.to(dtype=sample.dtype)).unsqueeze(1)
-        hidden = self.point_proj(sample) + timestep_emb
+        point_sine = gen_sineembed_for_curve_position(sample, self.hidden_dim).to(dtype=sample.dtype)
+        hidden = self.point_proj(torch.cat([sample, point_sine], dim=-1)) + timestep_emb
         safe_query_padding_mask = query_padding_mask
         if query_padding_mask is not None:
             safe_query_padding_mask = query_padding_mask.clone()
@@ -226,6 +231,10 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
         curriculum_cap = self._current_curriculum_cap()
         batch_size = images.shape[0]
         active_points = max(max(point_counts), 1)
+        image_sizes = torch.stack([
+            target['image_size'].to(device=images.device, dtype=images.dtype)
+            for target in targets
+        ], dim=0)
         direct_accepts = torch.stack([
             target.get('curriculum_direct_accept', torch.tensor(1.0)).to(device=images.device, dtype=images.dtype)
             for target in targets
@@ -238,22 +247,42 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             target.get('curriculum_rejected_candidates', torch.tensor(0.0)).to(device=images.device, dtype=images.dtype)
             for target in targets
         ]).sum()
-        source_points_ext = sample_uniform_points(
-            batch_size,
-            active_points,
-            device=images.device,
-            dtype=images.dtype,
+        fixed_source_points = []
+        use_fixed_source = True
+        for target in targets:
+            fixed = target.get('fixed_source_points')
+            if fixed is None:
+                use_fixed_source = False
+                break
+            fixed_source_points.append(fixed.to(device=images.device, dtype=images.dtype))
+        if use_fixed_source:
+            source_points_ext = torch.zeros((batch_size, active_points, 2), device=images.device, dtype=images.dtype)
+            for batch_idx, fixed in enumerate(fixed_source_points):
+                count = min(int(fixed.shape[0]), active_points)
+                if count > 0:
+                    source_points_ext[batch_idx, :count] = fixed[:count]
+        else:
+            source_points_ext = sample_uniform_points(
+                batch_size,
+                active_points,
+                device=images.device,
+                dtype=images.dtype,
+            )
+        source_points_ext, target_points_ext, valid_mask = build_uniform_flow_batch(
+            source_points_ext,
+            targets,
+            match_p=self.matching_cost_p,
+            pixel_space=self.matching_use_pixel_space,
         )
-        source_points_ext, target_points_ext, valid_mask = build_uniform_flow_batch(source_points_ext, targets)
         source_points = scale_points_to_flow(source_points_ext)
         target_points = scale_points_to_flow(target_points_ext).to(device=images.device, dtype=images.dtype)
         valid_mask = valid_mask.to(device=images.device)
         query_padding_mask = ~valid_mask
         timestep_indices = torch.randint(0, self.num_train_timesteps, (batch_size,), device=images.device)
         timesteps = timestep_indices.to(dtype=images.dtype)
-        tau = (timestep_indices.to(dtype=images.dtype) + 0.5) / float(self.num_train_timesteps)
-        tau = tau.view(batch_size, 1, 1)
-        noisy_points = (1.0 - tau) * source_points + tau * target_points
+        sigma = (timestep_indices.to(dtype=images.dtype) + 0.5) / float(self.num_train_timesteps)
+        sigma = sigma.view(batch_size, 1, 1)
+        noisy_points = sigma * source_points + (1.0 - sigma) * target_points
         image_cond = images
         cond_drop_mask = torch.zeros((batch_size,), dtype=torch.bool, device=images.device)
         if self.training and self.cond_drop_rate > 0.0:
@@ -273,6 +302,7 @@ class EndpointFlowMatchingModel(ModelMixin, ConfigMixin):
             'noisy_points': noisy_points,
             'pred_group_count': 1,
             'cond_drop_mask': cond_drop_mask,
+            'image_sizes': image_sizes,
             'curriculum_cap': torch.tensor(float(curriculum_cap), device=images.device),
             'kept_samples': torch.tensor(float(batch_size), device=images.device),
             'skipped_samples': torch.tensor(0.0, device=images.device),
