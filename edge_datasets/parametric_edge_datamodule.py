@@ -7,7 +7,7 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Sampler
 
-from edge_datasets.laion_synthetic_dataset import LaionSyntheticEdgeDataset, discover_laion_synthetic_samples
+from edge_datasets.laion_synthetic_dataset import LaionSyntheticBezierDataset, discover_laion_bezier_samples
 from edge_datasets.parametric_edge_dataset import ParametricEdgeDataset, parametric_edge_collate
 from misc_utils.bezier_target_utils import image_id_from_stem
 
@@ -193,27 +193,23 @@ class ParametricEdgeDataModule(pl.LightningDataModule):
         )
 
     def _build_laion_dataset(self, dataset_cfg: Dict, split: str, train_augment: bool, common: Dict):
-        sample_records = discover_laion_synthetic_samples(
+        sample_records = discover_laion_bezier_samples(
             data_root=Path(dataset_cfg['data_root']),
-            cache_root=Path(dataset_cfg.get('cache_root', Path(dataset_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
             image_root=Path(dataset_cfg['image_root']) if dataset_cfg.get('image_root') is not None else None,
-            edge_root=Path(dataset_cfg['edge_root']) if dataset_cfg.get('edge_root') is not None else None,
+            bezier_root=Path(dataset_cfg.get('bezier_root', dataset_cfg.get('edge_root'))) if dataset_cfg.get('bezier_root', dataset_cfg.get('edge_root')) is not None else None,
+            entry_cache_path=Path(dataset_cfg['entry_cache_path']) if dataset_cfg.get('entry_cache_path') is not None else None,
             batches=dataset_cfg.get('batches'),
             batch_glob=str(dataset_cfg.get('batch_glob', 'batch*')),
-            quantize=int(dataset_cfg.get('quantize', 4)),
             max_samples=dataset_cfg.get('max_samples'),
             selection_seed=dataset_cfg.get('selection_seed'),
             selection_offset=int(dataset_cfg.get('selection_offset', 0)),
         )
         if not sample_records:
             raise FileNotFoundError(f'No LAION synthetic samples found for config: {dataset_cfg}')
-        return LaionSyntheticEdgeDataset(
+        return LaionSyntheticBezierDataset(
             sample_records=sample_records,
-            cache_root=Path(dataset_cfg.get('cache_root', Path(dataset_cfg['data_root']) / 'laion_edge_v2_bezier_cache_fast')),
             image_size=int(common['image_size']),
-            version_name=str(common['version_name']),
             target_degree=int(common['target_degree']),
-            min_curve_length=float(common['min_curve_length']),
             max_targets=int(common['max_targets']),
             split=split,
             train_augment=train_augment,

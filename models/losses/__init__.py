@@ -6,9 +6,6 @@ def build_loss_computer(config):
     if arch == 'dab_endpoint_detr':
         from models.losses.endpoint_composite import EndpointLossComputer
         return EndpointLossComputer(config)
-    if arch == 'endpoint_flow_matching':
-        from models.losses.endpoint_flow_matching import EndpointFlowMatchingLossComputer
-        return EndpointFlowMatchingLossComputer(config)
     raise ValueError(f'Unsupported model.arch for loss selection: {arch}')
 
 

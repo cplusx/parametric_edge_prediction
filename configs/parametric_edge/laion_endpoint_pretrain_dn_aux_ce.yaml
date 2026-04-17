@@ -27,9 +27,9 @@ data:
     - dataset_type: laion_synthetic
       data_root: /home/user/yc47434/laion/edge_detection
       image_root: /home/user/yc47434/laion/edge_detection/edge_detection
-      edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
-      cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+      bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
       batch_glob: batch*
+      entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
       quantize: 4
       selection_seed: 20260318
       selection_offset: 2048
@@ -37,9 +37,9 @@ data:
     dataset_type: laion_synthetic
     data_root: /home/user/yc47434/laion/edge_detection
     image_root: /home/user/yc47434/laion/edge_detection/edge_detection
-    edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
-    cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
     batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
     quantize: 4
     selection_seed: 20260318
     selection_offset: 0
@@ -48,9 +48,9 @@ data:
     dataset_type: laion_synthetic
     data_root: /home/user/yc47434/laion/edge_detection
     image_root: /home/user/yc47434/laion/edge_detection/edge_detection
-    edge_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2
-    cache_root: /home/user/yc47434/laion/edge_detection/laion_edge_v2_bezier_cache_fast
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
     batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
     quantize: 4
     selection_seed: 20260318
     selection_offset: 1024

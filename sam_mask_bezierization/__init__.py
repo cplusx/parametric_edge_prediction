@@ -1,3 +1,8 @@
+from sam_mask_bezierization.bspline import (
+    draw_bspline_control_points_on_image,
+    draw_colored_bspline_curves_on_image,
+    run_bspline_from_source_edge,
+)
 from sam_mask_bezierization.pipeline import (
     apply_keep95,
     build_mask_generator,
@@ -5,23 +10,32 @@ from sam_mask_bezierization.pipeline import (
     draw_colored_curves_on_image,
     draw_endpoints_control_points_on_image,
     generate_masks,
+    pack_compact_bezier_paths,
     postprocess_final_paths,
     prune_tiny_edge_cc,
     raster_to_rgb,
     repair_global_band_thin,
+    run_bezier_from_source_edge,
     run_single_image_final_strategy,
+    save_compact_bezier_paths,
 )
 
 __all__ = [
     "apply_keep95",
     "build_mask_generator",
     "detect_small_bubbles",
+    "draw_bspline_control_points_on_image",
+    "draw_colored_bspline_curves_on_image",
     "draw_colored_curves_on_image",
     "draw_endpoints_control_points_on_image",
     "generate_masks",
+    "pack_compact_bezier_paths",
     "postprocess_final_paths",
     "prune_tiny_edge_cc",
     "raster_to_rgb",
     "repair_global_band_thin",
+    "run_bezier_from_source_edge",
+    "run_bspline_from_source_edge",
     "run_single_image_final_strategy",
+    "save_compact_bezier_paths",
 ]

@@ -7,9 +7,6 @@ def build_model(config):
     if arch == 'dab_endpoint_detr':
         from models.dab_endpoint_detr import DABEndpointDETR
         return DABEndpointDETR(config)
-    if arch == 'endpoint_flow_matching':
-        from models.endpoint_flow_matching import EndpointFlowMatchingModel
-        return EndpointFlowMatchingModel.from_config_dict(config)
-    raise ValueError(f'Unsupported model.arch: {arch}. Supported: dab_curve_detr, dab_endpoint_detr, endpoint_flow_matching.')
+    raise ValueError(f'Unsupported model.arch: {arch}. Supported: dab_curve_detr, dab_endpoint_detr.')
 
 __all__ = ['build_model']

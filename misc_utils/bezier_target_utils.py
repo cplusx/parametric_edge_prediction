@@ -309,6 +309,83 @@ def load_cached_targets(cache_path: Path) -> Dict:
     return {key: data[key] for key in data.files}
 
 
+def elevate_bezier_control_points(control_points: np.ndarray, target_degree: int) -> np.ndarray:
+    points = np.asarray(control_points, dtype=np.float32)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError(f'Expected [N, 2] control points, got {points.shape}')
+    current_degree = points.shape[0] - 1
+    target_degree = int(target_degree)
+    if current_degree == target_degree:
+        return points.astype(np.float32, copy=True)
+    if current_degree < 1:
+        return np.repeat(points[:1], target_degree + 1, axis=0).astype(np.float32)
+    if current_degree > target_degree:
+        sampled = sample_bezier_numpy(points, num_samples=max(64, (target_degree + 1) * 16))
+        return fit_polyline_to_bezier(sampled, degree=target_degree).astype(np.float32)
+
+    elevated = points.astype(np.float32, copy=True)
+    degree = current_degree
+    while degree < target_degree:
+        next_points = np.zeros((degree + 2, 2), dtype=np.float32)
+        next_points[0] = elevated[0]
+        next_points[-1] = elevated[-1]
+        for idx in range(1, degree + 1):
+            alpha = float(idx) / float(degree + 1)
+            next_points[idx] = alpha * elevated[idx - 1] + (1.0 - alpha) * elevated[idx]
+        elevated = next_points
+        degree += 1
+    return elevated.astype(np.float32, copy=False)
+
+
+def load_compact_bezier_targets(
+    bezier_path: Path,
+    target_degree: int,
+    max_targets: Optional[int] = None,
+) -> Dict:
+    data = np.load(bezier_path, allow_pickle=False)
+    required_keys = {'control_points', 'segment_degrees', 'segment_ctrl_offsets', 'path_segment_offsets', 'image_shape'}
+    missing = required_keys.difference(data.files)
+    if missing:
+        raise KeyError(f'Missing compact bezier keys {sorted(missing)} in {bezier_path}')
+
+    control_points = np.asarray(data['control_points'], dtype=np.float32)
+    segment_degrees = np.asarray(data['segment_degrees'], dtype=np.int32)
+    segment_ctrl_offsets = np.asarray(data['segment_ctrl_offsets'], dtype=np.int32)
+    image_shape = tuple(int(v) for v in np.asarray(data['image_shape']).tolist())
+    if len(image_shape) < 2:
+        raise ValueError(f'Invalid image_shape in {bezier_path}: {image_shape}')
+    height, width = int(image_shape[0]), int(image_shape[1])
+    scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
+
+    curves: List[np.ndarray] = []
+    lengths: List[float] = []
+    for seg_idx, degree in enumerate(segment_degrees.tolist()):
+        ctrl_start = int(segment_ctrl_offsets[seg_idx])
+        ctrl_end = int(segment_ctrl_offsets[seg_idx + 1])
+        ctrl_rc = control_points[ctrl_start:ctrl_end]
+        if ctrl_rc.ndim != 2 or ctrl_rc.shape[0] < 2 or ctrl_rc.shape[1] != 2:
+            continue
+        ctrl_xy = rc_to_xy(ctrl_rc)
+        ctrl_xy = elevate_bezier_control_points(ctrl_xy, target_degree=int(target_degree))
+        curves.append((ctrl_xy / scale[None, :]).astype(np.float32))
+        lengths.append(curve_length(ctrl_xy))
+
+    if curves:
+        order = np.argsort(np.asarray(lengths, dtype=np.float32))[::-1]
+        if max_targets is not None:
+            order = order[: int(max_targets)]
+        curve_array = np.stack([curves[idx] for idx in order]).astype(np.float32)
+    else:
+        curve_array = np.zeros((0, int(target_degree) + 1, 2), dtype=np.float32)
+
+    return {
+        'curves': curve_array,
+        'image_size': np.asarray([height, width], dtype=np.int64),
+        'path': str(bezier_path),
+        'image_id': image_id_from_stem(Path(bezier_path).stem),
+    }
+
+
 def load_image_array(image_path: Path, image_size: int, rgb: bool) -> np.ndarray:
     image = Image.open(image_path)
     image = image.convert('RGB' if rgb else 'L')

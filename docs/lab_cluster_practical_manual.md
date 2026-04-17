@@ -268,6 +268,8 @@ Do **not** delete:
 - Do not put hardware names like `h100` or `a40` into run names. Use model/data/batch semantics only.
 - If you need temporary `sbatch` files for this repo, keep them on the cluster checkout only, for example under `~/parametric_edge_prediction/cluster_tasks/`, and do not commit or mirror them locally.
 - LAION dataset discovery uses a text entry cache at `laion_entry_cache.txt` under the LAION data root. If the cache file exists, reuse it; if it does not, create it once at startup.
+- For this repo, cluster access should go through `log30` and then `logcluster`; do not assume direct access to the cluster login host from the local machine.
+- If a single `sbatch` allocation launches multiple GPU worker processes, do not hardcode `CUDA_VISIBLE_DEVICES=0` and `CUDA_VISIBLE_DEVICES=1` for the children. First read the job-level `CUDA_VISIBLE_DEVICES`, parse the GPUs SLURM actually assigned, and then pass those real IDs to the child processes. Log the original allocation and the per-worker mapping.
 
 ## 14. Lessons From 2026-03-18
 
@@ -285,6 +287,7 @@ Correct workflow:
 - Submit training with plain `sbatch`; if a temporary script is needed, keep it only on the cluster checkout and keep it out of Git.
 - In batch jobs, use `set +u`, then `source .../conda.sh`, then `conda activate ...`, then restore `set -u`.
 - Use `srun --jobid ... --overlap` only as an attached monitoring step for a running allocation, not as the main launch path.
+- In multi-worker GPU preprocess jobs launched from one `sbatch`, use background Python processes plus `wait`, and bind each child from the parsed job-level `CUDA_VISIBLE_DEVICES` list instead of assuming local GPU indices.
 - Use `tmux` first.
 - Probe before large jobs.
 - Test GPU partitions for CPU-only jobs.

@@ -5,8 +5,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from edge_datasets.graph_pipeline import prepare_eval_curve_sample_with_mask, prepare_training_curve_sample_with_mask
-from misc_utils.bezier_target_utils import ensure_target_cache, load_binary_edge_annotation, load_cached_targets, load_image_array_original, resolve_input_path
+from edge_datasets.graph_pipeline import prepare_eval_curve_sample, prepare_training_curve_sample
+from misc_utils.bezier_target_utils import ensure_target_cache, load_cached_targets, load_compact_bezier_targets, load_image_array_original, resolve_input_path
 
 
 class ParametricEdgeDataset(Dataset):
@@ -41,25 +41,35 @@ class ParametricEdgeDataset(Dataset):
     def __len__(self) -> int:
         return len(self.edge_paths)
 
-    def __getitem__(self, index: int) -> Dict:
-        edge_path = self.edge_paths[index]
+    def _load_curve_targets(self, path: Path) -> Dict:
+        if path.suffix == '.npz':
+            try:
+                return load_compact_bezier_targets(
+                    path,
+                    target_degree=self.target_degree,
+                    max_targets=self.max_targets,
+                )
+            except KeyError:
+                pass
         cache_path = ensure_target_cache(
-            edge_path=edge_path,
+            edge_path=path,
             cache_root=self.cache_root,
             version_name=self.version_name,
             target_degree=self.target_degree,
             min_curve_length=self.min_curve_length,
         )
-        target_cache = load_cached_targets(cache_path)
-        image_path = resolve_input_path(edge_path, self.input_root)
+        return load_cached_targets(cache_path)
+
+    def __getitem__(self, index: int) -> Dict:
+        curve_path = self.edge_paths[index]
+        target_cache = self._load_curve_targets(curve_path)
+        image_path = resolve_input_path(curve_path, self.input_root)
         image = load_image_array_original(image_path, rgb=self.rgb_input)
-        edge_mask = load_binary_edge_annotation(edge_path).astype(np.float32)[..., None] / 255.0
         curves = np.asarray(target_cache['curves'], dtype=np.float32)
         rng = np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
         if self.split == 'train' and self.train_augment:
-            image_hwc, edge_hwc, target_data = prepare_training_curve_sample_with_mask(
+            image_hwc, target_data = prepare_training_curve_sample(
                 image=image,
-                mask=edge_mask,
                 curves=curves,
                 image_size=self.image_size,
                 max_targets=self.max_targets,
@@ -67,35 +77,23 @@ class ParametricEdgeDataset(Dataset):
                 rng=rng,
             )
         else:
-            image_hwc, edge_hwc, target_data = prepare_eval_curve_sample_with_mask(
+            image_hwc, target_data = prepare_eval_curve_sample(
                 image=image,
-                mask=edge_mask,
                 curves=curves,
                 image_size=self.image_size,
                 max_targets=self.max_targets,
             )
         image_chw = np.transpose(image_hwc, (2, 0, 1))
-        edge_chw = np.transpose(edge_hwc, (2, 0, 1))
         curves = torch.from_numpy(target_data['curves']).float()
-        boxes = torch.from_numpy(target_data['curve_boxes']).float()
-        lengths = torch.from_numpy(target_data['curve_lengths']).float()
-        norm_lengths = torch.from_numpy(target_data.get('curve_norm_lengths', target_data['curve_lengths'] * 0.0)).float()
-        curvatures = torch.from_numpy(target_data.get('curve_curvatures', target_data['curve_lengths'] * 0.0)).float()
         labels = torch.ones((curves.shape[0],), dtype=torch.long)
         return {
             'image': torch.from_numpy(image_chw).float(),
             'target': {
                 'labels': labels,
                 'curves': curves,
-                'boxes': boxes,
-                'curve_lengths': lengths,
-                'curve_norm_lengths': norm_lengths[: curves.shape[0]],
-                'curve_curvatures': curvatures[: curves.shape[0]],
                 'image_size': torch.from_numpy(target_data['image_size']).long(),
-                'edge_mask': torch.from_numpy(edge_chw).float(),
-                'num_targets': torch.tensor(curves.shape[0], dtype=torch.long),
-                'sample_id': edge_path.stem,
-                'edge_path': str(edge_path),
+                'sample_id': curve_path.stem,
+                'bezier_path': str(curve_path),
                 'input_path': str(image_path),
             },
         }

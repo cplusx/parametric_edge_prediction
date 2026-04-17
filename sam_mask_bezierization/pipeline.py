@@ -10,7 +10,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from PIL import Image
 from scipy import ndimage
 from scipy.sparse.csgraph import minimum_spanning_tree
@@ -61,6 +60,8 @@ def build_mask_generator(
 
 
 def generate_masks(mask_generator: SAM2AutomaticMaskGenerator, image_np: np.ndarray) -> list[dict]:
+    import torch
+
     if torch.cuda.is_available():
         with torch.inference_mode(), torch.amp.autocast("cuda", dtype=torch.float16):
             return mask_generator.generate(image_np)
@@ -599,6 +600,109 @@ def draw_endpoints_control_points_on_image(image_np: np.ndarray, paths: list[dic
 
 def raster_to_rgb(raster: np.ndarray) -> np.ndarray:
     return np.repeat((np.asarray(raster, dtype=bool).astype(np.uint8) * 255)[..., None], 3, axis=2)
+
+
+def pack_compact_bezier_paths(paths: list[dict], image_shape: tuple[int, int] | None = None) -> dict[str, np.ndarray]:
+    segment_degrees: list[int] = []
+    segment_ctrl_offsets = [0]
+    path_segment_offsets = [0]
+    control_chunks: list[np.ndarray] = []
+
+    for path in paths:
+        for seg in path["segments"]:
+            ctrl = np.asarray(seg["control_points"], dtype=np.float32)
+            if ctrl.ndim != 2 or ctrl.shape[1] != 2:
+                raise ValueError(f"Invalid control point shape: {ctrl.shape}")
+            control_chunks.append(ctrl)
+            degree = int(seg.get("degree", ctrl.shape[0] - 1))
+            segment_degrees.append(degree)
+            segment_ctrl_offsets.append(segment_ctrl_offsets[-1] + ctrl.shape[0])
+        path_segment_offsets.append(len(segment_degrees))
+
+    if control_chunks:
+        control_points = np.concatenate(control_chunks, axis=0).astype(np.float32, copy=False)
+    else:
+        control_points = np.zeros((0, 2), dtype=np.float32)
+
+    payload = {
+        "control_points": control_points,
+        "segment_degrees": np.asarray(segment_degrees, dtype=np.uint8),
+        "segment_ctrl_offsets": np.asarray(segment_ctrl_offsets, dtype=np.int32),
+        "path_segment_offsets": np.asarray(path_segment_offsets, dtype=np.int32),
+    }
+    if image_shape is not None:
+        payload["image_shape"] = np.asarray(image_shape, dtype=np.int32)
+    return payload
+
+
+def save_compact_bezier_paths(
+    path: str | Path,
+    paths: list[dict],
+    image_shape: tuple[int, int] | None = None,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    payload = pack_compact_bezier_paths(paths, image_shape=image_shape)
+    if summary is not None:
+        for key in (
+            "base_path_count",
+            "base_segment_count",
+            "final_path_count",
+            "final_segment_count",
+            "removed_count",
+            "connector_count",
+            "cluster_replacement_count",
+            "junction_collapsed_count",
+        ):
+            if key in summary:
+                payload[key] = np.asarray(summary[key], dtype=np.int32)
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(out_path, **payload)
+
+
+def run_bezier_from_source_edge(
+    source_edge: np.ndarray,
+    compute_final_raster: bool = False,
+) -> dict[str, Any]:
+    source_edge = np.asarray(source_edge, dtype=bool)
+    base_result = run_version(
+        "v5_anchor_consistent",
+        output_dir=None,
+        image_array=(source_edge.astype(np.uint8) * 255),
+        compute_raster=False,
+        compute_summary=True,
+        compute_metrics=False,
+        include_debug_artifacts=False,
+        max_segment_length=120.0,
+        mean_error_threshold=0.75,
+        max_error_threshold=2.5,
+    )
+
+    base_paths = base_result["fitted_paths"]
+    final_paths, post_summary = postprocess_final_paths(base_paths, source_edge)
+    final_raster = None
+    if compute_final_raster:
+        final_raster, _ = render_piecewise_fits(source_edge.shape, final_paths)
+
+    summary = {
+        "base_path_count": int(base_result["summary"]["path_count"]),
+        "base_segment_count": int(base_result["summary"]["segment_count"]),
+        "final_path_count": int(post_summary["final_path_count"]),
+        "final_segment_count": int(post_summary["final_segment_count"]),
+        "removed_count": int(post_summary["removed_count"]),
+        "connector_count": int(post_summary["connector_count"]),
+        "cluster_replacement_count": int(post_summary["cluster_replacement_count"]),
+        "junction_collapsed_count": int(post_summary["junction_collapsed_count"]),
+    }
+    result: dict[str, Any] = {
+        "base_paths": base_paths,
+        "final_paths": final_paths,
+        "summary": summary,
+        "post_summary": post_summary,
+    }
+    if final_raster is not None:
+        result["final_raster"] = final_raster
+    return result
 
 
 def run_single_image_final_strategy(
