@@ -3,8 +3,12 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from typing import Callable
 
-from remote_hosts import run_lab30, wrap_cluster_cmd
+try:
+    from remote_hosts import run_lab30, wrap_cluster_cmd
+except ModuleNotFoundError:  # pragma: no cover
+    from scripts.remote_hosts import run_lab30, wrap_cluster_cmd
 
 
 LOCAL_REPO = "/Users/jiaxincheng/Desktop/expts/parametric_edge_prediction"
@@ -34,21 +38,62 @@ def ensure_local_git_ready() -> tuple[str, str]:
     return branch, head
 
 
-def sync_remote_repo(label: str, repo: str, branch: str, *, via_cluster: bool = False) -> None:
-    inner = (
-        f"set -euo pipefail; "
-        f"cd {repo}; "
-        f"test -z \"$(git status --porcelain)\"; "
-        f"git fetch origin; "
-        f"git checkout {branch}; "
-        f"git pull --ff-only origin {branch}; "
-        f"printf '%s\\n' $(git rev-parse HEAD)"
-    )
-    remote_cmd = wrap_cluster_cmd(inner) if via_cluster else inner
-    proc = run_lab30(remote_cmd, timeout=120)
+def _run_remote_sync_script(
+    *,
+    run_remote: Callable[[str], subprocess.CompletedProcess[str]],
+    label: str,
+    repo: str,
+    branch: str,
+) -> tuple[str, str]:
+    inner = f"""set -euo pipefail
+cd {repo}
+git fetch origin
+if git show-ref --verify --quiet refs/heads/{branch}; then
+  git checkout {branch}
+else
+  git checkout -b {branch} origin/{branch}
+fi
+dirty="$(git status --porcelain)"
+if [ -n "$dirty" ]; then
+  echo "__ACTION__ reset_dirty"
+  printf '%s\n' "$dirty"
+  git reset --hard origin/{branch}
+  git clean -fd
+else
+  current_head="$(git rev-parse HEAD)"
+  upstream_head="$(git rev-parse origin/{branch})"
+  if [ "$current_head" != "$upstream_head" ]; then
+    echo "__ACTION__ merge_committed"
+    git merge --no-edit -X theirs origin/{branch}
+  else
+    echo "__ACTION__ fast_forward_or_already_synced"
+  fi
+fi
+echo "__HEAD__ $(git rev-parse HEAD)"
+"""
+    proc = run_remote(inner)
     if proc.returncode != 0:
         raise RuntimeError(f"{label} sync failed: {(proc.stderr or proc.stdout).strip()}")
-    print(f"[{label}] {proc.stdout.strip().splitlines()[-1]}")
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    action = next((line.split(maxsplit=1)[1] for line in lines if line.startswith("__ACTION__ ")), "unknown")
+    head = next((line.split(maxsplit=1)[1] for line in lines if line.startswith("__HEAD__ ")), "")
+    if not head:
+        raise RuntimeError(f"{label} sync failed: missing resulting HEAD in output")
+    return action, head
+
+
+def sync_remote_repo(label: str, repo: str, branch: str, *, via_cluster: bool = False) -> None:
+    def _runner(cmd: str) -> subprocess.CompletedProcess[str]:
+        remote_cmd = wrap_cluster_cmd(cmd) if via_cluster else cmd
+        return run_lab30(remote_cmd, timeout=120)
+
+    action, head = _run_remote_sync_script(
+        run_remote=_runner,
+        label=label,
+        repo=repo,
+        branch=branch,
+    )
+    print(f"[{label}] action={action} head={head}")
 
 
 def main() -> None:
