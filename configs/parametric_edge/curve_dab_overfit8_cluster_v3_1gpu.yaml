@@ -1,0 +1,160 @@
+_inherit_default: false
+
+data:
+  include_primary_train_dataset: false
+  rgb_input: true
+  image_size: 256
+  batch_size: 4
+  val_batch_size: 4
+  num_workers: 8
+  pin_memory: true
+  persistent_workers: true
+  target_degree: 5
+  min_curve_length: 3.0
+  max_targets: 512
+  train_augment: false
+  augment:
+    resize_scale_range: [1.0, 1.0]
+    affine_scale_range: [1.0, 1.0]
+    affine_max_rotate_deg: 0.0
+    affine_max_translate_ratio: 0.0
+    hflip_prob: 0.0
+    vflip_prob: 0.0
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /home/user/yc47434/laion/edge_detection
+      image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+      bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+      batch_glob: batch*
+      entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+      max_samples: 8
+      selection_seed: 20260420
+      selection_offset: 0
+  val_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    max_samples: 8
+    selection_seed: 20260420
+    selection_offset: 0
+  test_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    max_samples: 8
+    selection_seed: 20260420
+    selection_offset: 0
+
+model:
+  arch: dab_curve_detr
+  input_channels: 3
+  target_degree: 5
+  hidden_dim: 256
+  num_queries: 300
+  nheads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  dim_feedforward: 2048
+  dropout: 0.0
+  dab_backbone_name: resnet50
+  dab_backbone_pretrained: true
+  dab_backbone_dilation: false
+  backbone_input_norm: imagenet
+  dab_keep_query_pos: false
+  dab_query_scale_type: cond_elewise
+  dab_curve_embed_diff_each_layer: false
+  dab_query_modulation_mode: sine_proj
+  gradient_checkpointing: false
+  curve_coord_min: -0.1
+  curve_coord_max: 1.1
+  object_bias: -2.0
+  no_object_bias: 2.0
+  dn_enabled: true
+  dn_use_cdn: false
+  dn_num_groups: 4
+  dn_noise_scale: 0.04
+  dn_use_label_embed: false
+
+loss:
+  class_loss_type: focal
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  chamfer_cost: 5.0
+  ce_weight: 1.0
+  chamfer_weight: 5.0
+  chamfer_num_samples: 20
+  chamfer_match_point_count: 20
+  no_object_weight: 0.2
+  dynamic_class_balance: false
+  aux_weight: 0.5
+  aux_layer_stride: 1
+  dn_weight: 1.0
+  dn_curve_weight: 5.0
+
+optimizer:
+  lr: 0.00002
+  backbone_lr: 0.00001
+  weight_decay: 0.0001
+  beta1: 0.9
+  beta2: 0.999
+  scheduler: multistep
+  warmup_epochs: 5
+  warmup_start_factor: 0.1
+  lr_milestones: [35, 45]
+  lr_gamma: 0.1
+  min_lr_ratio: 0.01
+
+trainer:
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/curve_dab_overfit8_cluster_v3_1gpu
+  max_epochs: 50
+  accelerator: auto
+  devices: 1
+  strategy: auto
+  precision: 32-true
+  accumulate_grad_batches: 1
+  effective_batch_size: 4
+  log_every_n_steps: 1
+  gradient_clip_val: 0.1
+  deterministic: false
+  benchmark: false
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  num_sanity_val_steps: 0
+  check_val_every_n_epoch: 1
+  effective_train_batches_per_epoch: null
+  run_test_after_fit: false
+  use_distributed_sampler: false
+
+callbacks:
+  visualization_every_n_epochs: 1
+  visualization_every_n_train_steps: 0
+  visualization_score_threshold: 0.5
+  visualization_max_curves: 300
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: false
+    project: laion_parametric_edge_prediction
+    name: curve-dab-overfit8-cluster-v3-1gpu
+    group: laion-dab-overfit
+    job_type: train
+    tags:
+      - laion
+      - cluster
+      - 1gpu
+      - dab
+      - curve
+      - v3
+      - fp32
+      - overfit8
+      - focal
+      - chamfer
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/curve_dab_overfit8_cluster_v3_1gpu/wandb

@@ -35,7 +35,9 @@ class MatchedPointLoss(BaseLossComponent):
             matched_pred_points.append(pred_points[batch_idx, src_idx])
             matched_tgt_points.append(curve_external_to_internal(targets[batch_idx]['points'][tgt_idx].to(device), self.config))
 
-        loss_ce = self.classification(pred_logits, target_classes, query_weights=query_weights)
+        classification_terms = self.classification.compute(pred_logits, target_classes, query_weights=query_weights)
+        class_loss_name = self.classification.loss_name()
+        classification_loss = classification_terms[class_loss_name]
         if matched_pred_points:
             matched_pred_points = torch.cat(matched_pred_points, dim=0)
             matched_tgt_points = torch.cat(matched_tgt_points, dim=0)
@@ -45,11 +47,11 @@ class MatchedPointLoss(BaseLossComponent):
             loss_point = pred_points.sum() * 0.0
 
         total = (
-            float(loss_cfg.get('ce_weight', 1.0)) * loss_ce
+            float(loss_cfg.get('ce_weight', 1.0)) * classification_loss
             + float(loss_cfg.get('point_weight', 5.0)) * loss_point
         )
         return {
             'loss_total': total,
-            'loss_ce': loss_ce,
+            **classification_terms,
             'loss_point': loss_point,
         }

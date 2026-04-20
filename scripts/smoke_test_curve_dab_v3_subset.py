@@ -82,12 +82,13 @@ def main() -> None:
         losses = compute_losses(outputs, batch['targets'], config)
         elapsed = time.perf_counter() - t0
         batch_times.append(elapsed)
+        cls_key = 'loss_focal' if 'loss_focal' in losses else 'loss_ce'
         batch_summaries.append({
             'batch_idx': batch_idx,
             'image_shape': list(batch['images'].shape),
             'num_targets': [int(target['curves'].shape[0]) for target in batch['targets']],
             'loss': float(losses['loss'].detach().cpu().item()),
-            'loss_ce': float(losses['loss_ce'].detach().cpu().item()),
+            cls_key: float(losses[cls_key].detach().cpu().item()),
             'loss_chamfer': float(losses['loss_chamfer'].detach().cpu().item()),
             'elapsed_sec': elapsed,
         })

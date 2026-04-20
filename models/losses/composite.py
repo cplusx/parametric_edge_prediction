@@ -1,20 +1,8 @@
 from typing import Dict, List
 
-from models.losses.matched import MatchedCurveLoss
+from models.losses.matched import MatchedCurveLoss, classification_loss_name_from_config
 from models.losses.regularizers import DenoisingLoss
 from models.matcher import HungarianCurveMatcher
-
-
-WEIGHTED_TERM_SPECS = {
-    'main': {
-        'prefix': 'loss',
-        'outer_weight_key': None,
-        'term_weight_keys': {
-            'ce': 'ce_weight',
-            'chamfer': 'chamfer_weight',
-        },
-    },
-}
 
 
 class ParametricEdgeLossComputer:
@@ -24,19 +12,17 @@ class ParametricEdgeLossComputer:
         self.denoising_loss = DenoisingLoss(config)
         self.matcher = HungarianCurveMatcher.from_config(config)
 
-    def _add_weighted_term_logs(self, log_values: Dict, scope: str, loss_cfg: Dict) -> None:
-        spec = WEIGHTED_TERM_SPECS[scope]
-        prefix = spec['prefix']
-        outer_weight = 1.0
-        if spec['outer_weight_key'] is not None:
-            outer_weight = float(loss_cfg.get(spec['outer_weight_key'], 0.0))
-        term_weight_defaults = spec.get('term_weight_defaults', {})
-        for term_name, term_weight_key in spec['term_weight_keys'].items():
-            raw_key = f'{prefix}_{term_name}'
+    def _add_weighted_term_logs(self, log_values: Dict, loss_cfg: Dict) -> None:
+        class_loss_name = classification_loss_name_from_config(self.config)
+        term_weight_keys = {
+            class_loss_name: 'ce_weight',
+            'loss_chamfer': 'chamfer_weight',
+        }
+        for raw_key, term_weight_key in term_weight_keys.items():
             if raw_key not in log_values:
                 continue
-            inner_weight = float(loss_cfg.get(term_weight_key, term_weight_defaults.get(term_name, 0.0)))
-            log_values[f'{raw_key}_weighted'] = log_values[raw_key] * (outer_weight * inner_weight)
+            inner_weight = float(loss_cfg.get(term_weight_key, 0.0))
+            log_values[f'{raw_key}_weighted'] = log_values[raw_key] * inner_weight
 
     def __call__(self, outputs: Dict, targets: List[dict]) -> Dict:
         loss_cfg = self.config['loss']
@@ -49,7 +35,7 @@ class ParametricEdgeLossComputer:
         base = self.matched_curve_loss(outputs['pred_curves'], outputs['pred_logits'], targets, indices, outputs)
         total = base['loss_total']
         log_values = {key: value.detach() for key, value in base.items() if key != 'loss_total'}
-        self._add_weighted_term_logs(log_values, 'main', loss_cfg)
+        self._add_weighted_term_logs(log_values, loss_cfg)
 
         aux_weight = float(loss_cfg.get('aux_weight', 0.5))
         for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
