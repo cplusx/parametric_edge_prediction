@@ -11,10 +11,7 @@ WEIGHTED_TERM_SPECS = {
         'outer_weight_key': None,
         'term_weight_keys': {
             'ce': 'ce_weight',
-            'ctrl': 'ctrl_weight',
-            'sample': 'sample_weight',
-            'endpoint': 'endpoint_weight',
-            'curve_dist': 'curve_distance_weight',
+            'chamfer': 'chamfer_weight',
         },
     },
 }

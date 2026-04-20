@@ -103,6 +103,6 @@ class TrackedCurveVisualizer(pl.Callback):
         axes[1].set_facecolor("black")
 
         fig.tight_layout()
-        frame_path = out_dir / f"epoch_{trainer.current_epoch:03d}.png"
+        frame_path = out_dir / f"epoch_{trainer.current_epoch:03d}.jpg"
         fig.savefig(frame_path, dpi=160, bbox_inches="tight")
         plt.close(fig)

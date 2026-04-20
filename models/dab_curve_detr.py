@@ -291,6 +291,10 @@ class CurveCrossAttention(nn.Module):
     ) -> torch.Tensor:
         batch_size, num_queries, _ = query.shape
         num_tokens = key.shape[1]
+        # MPS + SDPA is unstable here: validation hit a shape mismatch in cross-attention.
+        # Fall back to the explicit matmul path on MPS for both train/eval.
+        if query.device.type == 'mps':
+            use_sdpa = False
         q = query.view(batch_size, num_queries, self.nhead, self.head_dim * 2).transpose(1, 2)
         k = key.view(batch_size, num_tokens, self.nhead, self.head_dim * 2).transpose(1, 2)
         v = value.view(batch_size, num_tokens, self.nhead, self.head_dim).transpose(1, 2)

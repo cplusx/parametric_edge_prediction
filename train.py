@@ -157,6 +157,12 @@ def main() -> None:
 
     config = load_config(args.config, args.override_config)
     config = resolve_runtime_scaling(config)
+    precision = str(config.get('trainer', {}).get('precision', '32-true'))
+    if precision != '32-true':
+        raise ValueError(
+            f"Only fp32 training is allowed in this repo now; got trainer.precision={precision!r}. "
+            "Set trainer.precision to '32-true'."
+        )
     if int(config.get('data', {}).get('num_workers', 0)) > 0:
         torch.multiprocessing.set_sharing_strategy('file_system')
     seed = config.get('trainer', {}).get('seed')

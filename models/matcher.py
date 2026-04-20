@@ -2,14 +2,8 @@ from typing import List, Optional, Tuple
 
 import torch
 from scipy.optimize import linear_sum_assignment
-from misc_utils.train_utils import sample_bezier_curves_torch
 from models.curve_coordinates import curve_external_to_internal
-from models.geometry import (
-    pairwise_curve_l1_forward_reverse_cost,
-    pairwise_endpoint_l1_forward_reverse_cost,
-    pairwise_sample_l1_forward_reverse_cost,
-    pairwise_curve_chamfer_cost,
-)
+from models.geometry import pairwise_curve_chamfer_cost
 
 
 def _finite_debug_summary(name: str, tensor: torch.Tensor) -> str:
@@ -37,24 +31,14 @@ class HungarianCurveMatcher:
     def __init__(
         self,
         *,
-        control_cost: float = 5.0,
-        endpoint_cost: float = 5.0,
-        sample_cost: float = 0.0,
-        curve_distance_cost: float = 0.0,
-        curve_match_point_count: int = 4,
-        num_curve_samples: int = 16,
-        direction_invariant: bool = True,
+        chamfer_cost: float = 5.0,
+        chamfer_match_point_count: int = 20,
         use_edge_prob_cost_in_matching: bool = False,
         edge_prob_cost: float = 1.0,
         config: dict = None,
     ) -> None:
-        self.control_cost = float(control_cost)
-        self.endpoint_cost = float(endpoint_cost)
-        self.sample_cost = float(sample_cost)
-        self.curve_distance_cost = float(curve_distance_cost)
-        self.curve_match_point_count = int(curve_match_point_count)
-        self.num_curve_samples = int(num_curve_samples)
-        self.direction_invariant = bool(direction_invariant)
+        self.chamfer_cost = float(chamfer_cost)
+        self.chamfer_match_point_count = int(chamfer_match_point_count)
         self.use_edge_prob_cost_in_matching = bool(use_edge_prob_cost_in_matching)
         self.edge_prob_cost = float(edge_prob_cost)
         self.config = config
@@ -69,13 +53,8 @@ class HungarianCurveMatcher:
     ) -> "HungarianCurveMatcher":
         loss_cfg = config.get('loss', {})
         return cls(
-            control_cost=float(loss_cfg.get('control_cost', 5.0)),
-            endpoint_cost=float(loss_cfg.get('endpoint_cost', 5.0)),
-            sample_cost=float(loss_cfg.get('sample_cost', 0.0)),
-            curve_distance_cost=float(loss_cfg.get('curve_distance_cost', 0.0)),
-            curve_match_point_count=int(loss_cfg.get('curve_match_point_count', 4)),
-            num_curve_samples=int(loss_cfg.get('num_curve_samples', 16)),
-            direction_invariant=bool(loss_cfg.get('direction_invariant', True)),
+            chamfer_cost=float(loss_cfg.get('chamfer_cost', 5.0)),
+            chamfer_match_point_count=int(loss_cfg.get('chamfer_match_point_count', 20)),
             use_edge_prob_cost_in_matching=(
                 bool(loss_cfg.get('use_edge_prob_cost_in_matching', False))
                 if use_edge_prob_cost_in_matching is None
@@ -102,42 +81,12 @@ class HungarianCurveMatcher:
         curves: torch.Tensor,
         tgt_curves: torch.Tensor,
     ) -> torch.Tensor:
-        if self.direction_invariant:
-            ctrl_forward, ctrl_reverse = pairwise_curve_l1_forward_reverse_cost(curves, tgt_curves)
-            endpoint_forward, endpoint_reverse = pairwise_endpoint_l1_forward_reverse_cost(curves, tgt_curves)
-            sample_forward, sample_reverse = pairwise_sample_l1_forward_reverse_cost(
-                curves,
-                tgt_curves,
-                num_samples=self.num_curve_samples,
-            )
-        else:
-            ctrl_cost = torch.cdist(curves.reshape(curves.shape[0], -1), tgt_curves.reshape(tgt_curves.shape[0], -1), p=1)
-            endpoint_cost_matrix = torch.cdist(
-                curves[:, [0, -1]].reshape(curves.shape[0], -1),
-                tgt_curves[:, [0, -1]].reshape(tgt_curves.shape[0], -1),
-                p=1,
-            )
-            sampled_pred = sample_bezier_curves_torch(curves, num_samples=self.num_curve_samples).reshape(curves.shape[0], -1)
-            sampled_tgt = sample_bezier_curves_torch(tgt_curves, num_samples=self.num_curve_samples).reshape(tgt_curves.shape[0], -1)
-            sample_cost_matrix = torch.cdist(sampled_pred, sampled_tgt, p=1)
-        curve_distance_cost_matrix = pairwise_curve_chamfer_cost(
+        chamfer_cost_matrix = pairwise_curve_chamfer_cost(
             curves,
             tgt_curves,
-            point_count=self.curve_match_point_count,
+            point_count=self.chamfer_match_point_count,
         )
-        if self.direction_invariant:
-            oriented_cost = torch.minimum(
-                self.control_cost * ctrl_forward + self.endpoint_cost * endpoint_forward + self.sample_cost * sample_forward,
-                self.control_cost * ctrl_reverse + self.endpoint_cost * endpoint_reverse + self.sample_cost * sample_reverse,
-            )
-            total = oriented_cost + self.curve_distance_cost * curve_distance_cost_matrix
-        else:
-            total = (
-                self.control_cost * ctrl_cost
-                + self.endpoint_cost * endpoint_cost_matrix
-                + self.sample_cost * sample_cost_matrix
-                + self.curve_distance_cost * curve_distance_cost_matrix
-            )
+        total = self.chamfer_cost * chamfer_cost_matrix
         if self.use_edge_prob_cost_in_matching:
             total = total + self.edge_prob_cost * self._edge_prob_cost_matrix(logits, tgt_curves.shape[0])
         return total
@@ -187,13 +136,8 @@ def build_curve_cost_matrix(
     logits: torch.Tensor,
     curves: torch.Tensor,
     tgt_curves: torch.Tensor,
-    control_cost: float,
-    endpoint_cost: float,
-    sample_cost: float,
-    curve_distance_cost: float,
-    curve_match_point_count: int,
-    num_curve_samples: int,
-    direction_invariant: bool = True,
+    chamfer_cost: float,
+    chamfer_match_point_count: int,
     use_edge_prob_cost_in_matching: Optional[bool] = None,
     edge_prob_cost: Optional[float] = None,
     config: dict = None,
@@ -206,13 +150,8 @@ def build_curve_cost_matrix(
         )
         if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
         else HungarianCurveMatcher(
-            control_cost=control_cost,
-            endpoint_cost=endpoint_cost,
-            sample_cost=sample_cost,
-            curve_distance_cost=curve_distance_cost,
-            curve_match_point_count=curve_match_point_count,
-            num_curve_samples=num_curve_samples,
-            direction_invariant=direction_invariant,
+            chamfer_cost=chamfer_cost,
+            chamfer_match_point_count=chamfer_match_point_count,
             use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,
@@ -226,13 +165,8 @@ def hungarian_curve_matching(
     logits: torch.Tensor,
     curves: torch.Tensor,
     targets: List[dict],
-    control_cost: float = 5.0,
-    endpoint_cost: float = 5.0,
-    sample_cost: float = 0.0,
-    curve_distance_cost: float = 0.0,
-    curve_match_point_count: int = 4,
-    num_curve_samples: int = 16,
-    direction_invariant: bool = True,
+    chamfer_cost: float = 5.0,
+    chamfer_match_point_count: int = 20,
     use_edge_prob_cost_in_matching: Optional[bool] = None,
     edge_prob_cost: Optional[float] = None,
     config: dict = None,
@@ -245,13 +179,8 @@ def hungarian_curve_matching(
         )
         if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
         else HungarianCurveMatcher(
-            control_cost=control_cost,
-            endpoint_cost=endpoint_cost,
-            sample_cost=sample_cost,
-            curve_distance_cost=curve_distance_cost,
-            curve_match_point_count=curve_match_point_count,
-            num_curve_samples=num_curve_samples,
-            direction_invariant=direction_invariant,
+            chamfer_cost=chamfer_cost,
+            chamfer_match_point_count=chamfer_match_point_count,
             use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,

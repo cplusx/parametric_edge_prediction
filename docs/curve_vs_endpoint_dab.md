@@ -22,10 +22,7 @@ Code:
 - matcher is `HungarianCurveMatcher`
 - matched losses:
   - `loss_ce`
-  - `loss_ctrl`
-  - `loss_endpoint`
-  - optional `loss_sample`
-  - optional `loss_curve_dist`
+  - `loss_chamfer`
 - DN regularizer reconstructs full curves:
   - `loss_dn_curve`
 
@@ -131,14 +128,14 @@ Where:
 
 ## Current WandB Status
 
-The current `lab30` endpoint run has WandB disabled for two separate reasons:
+The current `lab30` endpoint run had WandB disabled for two separate reasons:
 
-1. config disables it:
+1. config disabled it:
    - `configs/parametric_edge/laion_endpoint_pretrain_lab30_v3_2gpu.yaml`
-   - `logging.wandb.enabled: false`
+   - `logging.wandb.enabled: true` should be used
 
-2. launcher forces it off:
+2. launcher forced it off:
    - `/home/viplab/jiaxin/parametric_edge_prediction/outputs/tmp_train_lab30_endpoint.sh`
-   - `export WANDB_MODE=disabled`
+   - remove `export WANDB_MODE=disabled`
 
-So WandB is not failing to initialize; it is explicitly turned off by config and by environment.
+So WandB was not failing to initialize; it had been explicitly turned off by config and by environment.

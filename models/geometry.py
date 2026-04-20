@@ -61,164 +61,19 @@ def reverse_curve_points(curves: torch.Tensor) -> torch.Tensor:
     return torch.flip(curves, dims=(-2,))
 
 
-def pairwise_curve_l1_forward_reverse_cost(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
-        zero = pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
-        return zero, zero
-    pred_flat = pred_curves.reshape(pred_curves.shape[0], -1)
-    tgt_flat = tgt_curves.reshape(tgt_curves.shape[0], -1)
-    tgt_rev_flat = reverse_curve_points(tgt_curves).reshape(tgt_curves.shape[0], -1)
-    forward = torch.cdist(pred_flat, tgt_flat, p=1)
-    reverse = torch.cdist(pred_flat, tgt_rev_flat, p=1)
-    return forward, reverse
-
-
-def pairwise_sample_l1_forward_reverse_cost(
+def symmetric_curve_chamfer_distance(
     pred_curves: torch.Tensor,
     tgt_curves: torch.Tensor,
     num_samples: int,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
-        zero = pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
-        return zero, zero
-    pred_samples = sample_bezier_curves_torch(pred_curves, num_samples=num_samples).reshape(pred_curves.shape[0], -1)
-    tgt_samples = sample_bezier_curves_torch(tgt_curves, num_samples=num_samples)
-    tgt_forward = tgt_samples.reshape(tgt_curves.shape[0], -1)
-    tgt_reverse = torch.flip(tgt_samples, dims=(-2,)).reshape(tgt_curves.shape[0], -1)
-    forward = torch.cdist(pred_samples, tgt_forward, p=1)
-    reverse = torch.cdist(pred_samples, tgt_reverse, p=1)
-    return forward, reverse
-
-
-def pairwise_endpoint_l1_forward_reverse_cost(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
-        zero = pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
-        return zero, zero
-    pred_endpoints = pred_curves[:, [0, -1]].reshape(pred_curves.shape[0], -1)
-    tgt_endpoints = tgt_curves[:, [0, -1]].reshape(tgt_curves.shape[0], -1)
-    tgt_rev_endpoints = reverse_curve_points(tgt_curves)[:, [0, -1]].reshape(tgt_curves.shape[0], -1)
-    forward = torch.cdist(pred_endpoints, tgt_endpoints, p=1)
-    reverse = torch.cdist(pred_endpoints, tgt_rev_endpoints, p=1)
-    return forward, reverse
-
-
-def aligned_curve_l1(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0:
-        zero = pred_curves.new_zeros((0,))
-        return zero, pred_curves
-    tgt_reversed = reverse_curve_points(tgt_curves)
-    forward = torch.abs(pred_curves - tgt_curves).mean(dim=(1, 2))
-    reverse = torch.abs(pred_curves - tgt_reversed).mean(dim=(1, 2))
-    use_reverse = reverse < forward
-    best = torch.where(use_reverse, reverse, forward)
-    oriented_target = torch.where(
-        use_reverse[:, None, None],
-        tgt_reversed,
-        tgt_curves,
-    )
-    return best, oriented_target
-
-
-def aligned_curve_endpoint_l1(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-    ctrl_weight: float = 1.0,
-    endpoint_weight: float = 1.0,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0:
-        zero = pred_curves.new_zeros((0,))
-        return zero, zero, pred_curves
-    tgt_reversed = reverse_curve_points(tgt_curves)
-    ctrl_forward = torch.abs(pred_curves - tgt_curves).mean(dim=(1, 2))
-    ctrl_reverse = torch.abs(pred_curves - tgt_reversed).mean(dim=(1, 2))
-    pred_endpoints = pred_curves[:, [0, -1]]
-    endpoint_forward = torch.abs(pred_endpoints - tgt_curves[:, [0, -1]]).mean(dim=(1, 2))
-    endpoint_reverse = torch.abs(pred_endpoints - tgt_reversed[:, [0, -1]]).mean(dim=(1, 2))
-    forward_total = float(ctrl_weight) * ctrl_forward + float(endpoint_weight) * endpoint_forward
-    reverse_total = float(ctrl_weight) * ctrl_reverse + float(endpoint_weight) * endpoint_reverse
-    use_reverse = reverse_total < forward_total
-    oriented_target = torch.where(use_reverse[:, None, None], tgt_reversed, tgt_curves)
-    ctrl_best = torch.where(use_reverse, ctrl_reverse, ctrl_forward)
-    endpoint_best = torch.where(use_reverse, endpoint_reverse, endpoint_forward)
-    return ctrl_best, endpoint_best, oriented_target
-
-
-def aligned_endpoint_l1(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
 ) -> torch.Tensor:
     if pred_curves.numel() == 0:
         return pred_curves.new_zeros((0,))
-    tgt_reversed = reverse_curve_points(tgt_curves)
-    pred_endpoints = pred_curves[:, [0, -1]]
-    forward = torch.abs(pred_endpoints - tgt_curves[:, [0, -1]]).mean(dim=(1, 2))
-    reverse = torch.abs(pred_endpoints - tgt_reversed[:, [0, -1]]).mean(dim=(1, 2))
-    return torch.minimum(forward, reverse)
-
-
-def pairwise_aligned_curve_l1_cost(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-) -> torch.Tensor:
-    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
-        return pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
-    if native_cost_cpp is not None and (not torch.is_grad_enabled()) and (not pred_curves.requires_grad) and (not tgt_curves.requires_grad):
-        try:
-            return native_cost_cpp.aligned_curve_l1_cost(pred_curves, tgt_curves).to(device=pred_curves.device, dtype=pred_curves.dtype)
-        except Exception:
-            pass
-    forward, reverse = pairwise_curve_l1_forward_reverse_cost(pred_curves, tgt_curves)
-    return torch.minimum(forward, reverse)
-
-
-def pairwise_aligned_sample_l1_cost(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-    num_samples: int,
-) -> torch.Tensor:
-    if pred_curves.numel() == 0 or tgt_curves.numel() == 0:
-        return pred_curves.new_zeros((pred_curves.shape[0], tgt_curves.shape[0]))
-    if native_cost_cpp is not None and (not torch.is_grad_enabled()) and (not pred_curves.requires_grad) and (not tgt_curves.requires_grad):
-        try:
-            pred_samples = sample_bezier_curves_torch(pred_curves, num_samples=num_samples)
-            tgt_samples = sample_bezier_curves_torch(tgt_curves, num_samples=num_samples)
-            return native_cost_cpp.aligned_sample_l1_cost(pred_samples, tgt_samples).to(device=pred_curves.device, dtype=pred_curves.dtype)
-        except Exception:
-            pass
-    forward, reverse = pairwise_sample_l1_forward_reverse_cost(pred_curves, tgt_curves, num_samples=num_samples)
-    return torch.minimum(forward, reverse)
-
-
-def symmetric_curve_distance(
-    pred_curves: torch.Tensor,
-    tgt_curves: torch.Tensor,
-    num_samples: int,
-    length_weight: float = 0.25,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    if pred_curves.numel() == 0:
-        zero = pred_curves.new_zeros((0,))
-        return zero, zero, zero
     pred_samples = sample_bezier_curves_torch(pred_curves, num_samples=num_samples)
     tgt_samples = sample_bezier_curves_torch(tgt_curves, num_samples=num_samples)
-    pairwise = torch.cdist(pred_samples, tgt_samples)
-    chamfer = 0.5 * (
-        pairwise.min(dim=2).values.mean(dim=1) +
-        pairwise.min(dim=1).values.mean(dim=1)
-    )
-    pred_length = _curve_arc_length(pred_samples)
-    tgt_length = _curve_arc_length(tgt_samples)
-    length_delta = torch.abs(pred_length - tgt_length)
-    total = chamfer + float(length_weight) * length_delta
-    return total, chamfer, length_delta
+    pairwise = torch.cdist(pred_samples, tgt_samples, p=2.0)
+    pred_to_tgt = pairwise.min(dim=2).values.mean(dim=1)
+    tgt_to_pred = pairwise.min(dim=1).values.mean(dim=1)
+    return pred_to_tgt + tgt_to_pred
 
 
 def pairwise_curve_chamfer_cost(

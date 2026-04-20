@@ -20,8 +20,7 @@ The current active stack is:
 - focal classification in the main configs
 - one-to-one Hungarian matching
 - active geometry supervision:
-  - `ctrl`
-  - `endpoint`
+  - `chamfer`
 - FP32 training
 
 Code:
@@ -49,47 +48,42 @@ Current mainline matching:
 
 - one-to-one Hungarian matching
 - matching costs:
-  - `control_cost`
-  - `endpoint_cost`
+  - `ce`
+  - `chamfer`
 
 Current mainline optimization:
 
 - focal classification
-- `loss_ctrl`
-- `loss_endpoint`
+- `loss_chamfer`
 
 Inactive by default in the main configs:
 
 - DN
 - auxiliary decoder-layer supervision
-- `sample` loss
-- `curve_distance` loss
 - all grouped auxiliary objectives
 
 The current mainline is deliberately narrower than the older stack. That is intentional: the repo was cleaned up to keep only the path that survived overfit debugging.
 
-## Direction-Invariant Curve Comparison
+## Current Curve Supervision
 
 Current behavior:
 
-- For each predicted/target pair, both forward and reversed target orderings are evaluated.
-- The lower-cost orientation is used.
-
-This applies to:
-
-- Hungarian matching cost construction
-- matched `ctrl` / `endpoint` supervision
+- predicted endpoints + control points are rendered into sampled curves
+- ground-truth curves are sampled the same way
+- Hungarian matching uses:
+  - classification cost
+  - sampled curve Chamfer cost
+- optimization uses:
+  - `loss_ce`
+  - `loss_chamfer`
+- DN stays on plain L1 curve reconstruction; it does not use Chamfer
 
 Code:
 
 - [models/geometry.py](../models/geometry.py)
 - [models/matcher.py](../models/matcher.py)
 - [models/losses/matched.py](../models/losses/matched.py)
-
-Why it stays:
-
-- Endpoint order is representational, not semantic.
-- Penalizing reversed-but-correct curves is not useful supervision.
+- [models/losses/regularizers.py](../models/losses/regularizers.py)
 
 ## Curve Coordinate Mapping
 

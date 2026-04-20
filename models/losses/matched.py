@@ -4,11 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from models.curve_coordinates import curve_external_to_internal
-from models.geometry import (
-    aligned_curve_endpoint_l1,
-    symmetric_curve_distance,
-)
-from models.losses.base import BaseLossComponent, balanced_class_weights, matched_curve_weights, weighted_mean
+from models.geometry import symmetric_curve_chamfer_distance
+from models.losses.base import BaseLossComponent, balanced_class_weights
 
 
 class ClassificationLoss(BaseLossComponent):
@@ -78,103 +75,34 @@ class MatchedCurveLoss(BaseLossComponent):
     ) -> Dict[str, torch.Tensor]:
         loss_cfg = self.config['loss']
         weight_cfg = loss_cfg if loss_weight_overrides is None else {**loss_cfg, **loss_weight_overrides}
-        direction_invariant = bool(loss_cfg.get('direction_invariant', True))
         device = pred_logits.device
         target_classes = torch.full(pred_logits.shape[:2], 1, dtype=torch.long, device=device)
         matched_pred_curves = []
         matched_tgt_curves = []
-        matched_pair_weights = []
         for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
             if src_idx.numel() == 0:
                 continue
             target_classes[batch_idx, src_idx] = 0
             matched_pred_curves.append(pred_curves[batch_idx, src_idx])
             matched_tgt_curves.append(curve_external_to_internal(targets[batch_idx]['curves'][tgt_idx].to(device), self.config))
-            if match_weights is not None:
-                matched_pair_weights.append(match_weights[batch_idx].to(device=device, dtype=pred_logits.dtype))
         loss_ce = self.classification(pred_logits, target_classes, query_weights=query_weights)
         if matched_pred_curves:
             matched_pred_curves = torch.cat(matched_pred_curves, dim=0)
             matched_tgt_curves = torch.cat(matched_tgt_curves, dim=0)
-            ctrl_weights = matched_curve_weights(
-                targets,
-                indices,
-                device,
-                alpha=float(loss_cfg.get('curvature_weight_alpha', 0.0)),
-                power=float(loss_cfg.get('curvature_weight_power', 1.0)),
-            )
-            endpoint_weights = matched_curve_weights(
-                targets,
-                indices,
-                device,
-                alpha=float(loss_cfg.get('curvature_endpoint_alpha', loss_cfg.get('curvature_weight_alpha', 0.0))),
-                power=float(loss_cfg.get('curvature_endpoint_power', loss_cfg.get('curvature_weight_power', 1.0))),
-            )
-            curve_weights = matched_curve_weights(
-                targets,
-                indices,
-                device,
-                alpha=float(loss_cfg.get('curvature_curve_distance_alpha', loss_cfg.get('curvature_weight_alpha', 0.0))),
-                power=float(loss_cfg.get('curvature_curve_distance_power', loss_cfg.get('curvature_weight_power', 1.0))),
-            )
-            if matched_pair_weights:
-                pair_weights = torch.cat(matched_pair_weights, dim=0)
-                ctrl_weights = ctrl_weights * pair_weights
-                endpoint_weights = endpoint_weights * pair_weights
-                curve_weights = curve_weights * pair_weights
-            if direction_invariant:
-                ctrl_abs, endpoint_abs, oriented_tgt_curves = aligned_curve_endpoint_l1(
-                    matched_pred_curves,
-                    matched_tgt_curves,
-                    ctrl_weight=float(weight_cfg.get('ctrl_weight', 1.0)),
-                    endpoint_weight=float(weight_cfg.get('endpoint_weight', 1.0)),
-                )
-            else:
-                ctrl_abs = torch.abs(matched_pred_curves - matched_tgt_curves).mean(dim=(1, 2))
-                oriented_tgt_curves = matched_tgt_curves
-                endpoint_abs = torch.abs(
-                    matched_pred_curves[:, [0, -1]] - matched_tgt_curves[:, [0, -1]]
-                ).mean(dim=(1, 2))
-            loss_ctrl = weighted_mean(ctrl_abs, ctrl_weights)
-            loss_endpoint = weighted_mean(endpoint_abs, endpoint_weights)
-            sample_weight = float(weight_cfg.get('sample_weight', 0.0))
-            curve_distance_weight = float(weight_cfg.get('curve_distance_weight', 0.0))
-            if sample_weight > 0.0 or curve_distance_weight > 0.0:
-                curve_dist, curve_chamfer, curve_length = symmetric_curve_distance(
-                    matched_pred_curves,
-                    oriented_tgt_curves,
-                    num_samples=int(loss_cfg.get('num_curve_samples', 16)),
-                    length_weight=float(loss_cfg.get('curve_distance_length_weight', 0.25)),
-                )
-                loss_curve_dist = weighted_mean(curve_dist, curve_weights)
-                loss_curve_chamfer = weighted_mean(curve_chamfer, curve_weights)
-                loss_curve_length = weighted_mean(curve_length, curve_weights)
-            else:
-                zero = matched_pred_curves.sum() * 0.0
-                loss_curve_dist = zero
-                loss_curve_chamfer = zero
-                loss_curve_length = zero
+            loss_chamfer = symmetric_curve_chamfer_distance(
+                matched_pred_curves,
+                matched_tgt_curves,
+                num_samples=int(loss_cfg.get('chamfer_num_samples', 20)),
+            ).mean()
         else:
             zero = pred_curves.sum() * 0.0
-            loss_ctrl = zero
-            loss_endpoint = zero
-            loss_curve_dist = zero
-            loss_curve_chamfer = zero
-            loss_curve_length = zero
+            loss_chamfer = zero
         total = (
             float(weight_cfg.get('ce_weight', 1.0)) * loss_ce
-            + float(weight_cfg.get('ctrl_weight', 5.0)) * loss_ctrl
-            + float(weight_cfg.get('sample_weight', 0.0)) * loss_curve_chamfer
-            + float(weight_cfg.get('endpoint_weight', 5.0)) * loss_endpoint
-            + float(weight_cfg.get('curve_distance_weight', 0.0)) * loss_curve_dist
+            + float(weight_cfg.get('chamfer_weight', 5.0)) * loss_chamfer
         )
         return {
             'loss_total': total,
             'loss_ce': loss_ce,
-            'loss_ctrl': loss_ctrl,
-            'loss_sample': loss_curve_chamfer,
-            'loss_endpoint': loss_endpoint,
-            'loss_curve_dist': loss_curve_dist,
-            'loss_curve_chamfer': loss_curve_chamfer,
-            'loss_curve_length': loss_curve_length,
+            'loss_chamfer': loss_chamfer,
         }

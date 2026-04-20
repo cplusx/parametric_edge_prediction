@@ -60,11 +60,11 @@ model:
   no_object_bias: 2.0
 loss:
   class_loss_type: focal
-  control_cost: 5.0
-  endpoint_cost: 5.0
+  chamfer_cost: 5.0
   ce_weight: 1.0
-  ctrl_weight: 5.0
-  endpoint_weight: 5.0
+  chamfer_weight: 5.0
+  chamfer_num_samples: 20
+  chamfer_match_point_count: 20
   no_object_weight: 0.2
   dynamic_class_balance: false
 

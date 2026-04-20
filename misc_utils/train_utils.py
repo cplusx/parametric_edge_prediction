@@ -1,22 +1,47 @@
-from typing import List, Tuple
+import math
+from typing import Dict, List, Tuple
 
 import torch
+
+
+_BASIS_CACHE: Dict[Tuple[int, int, str, str], torch.Tensor] = {}
 
 
 def bernstein_basis_torch(degree: int, t_values: torch.Tensor) -> torch.Tensor:
     basis = []
     for i in range(degree + 1):
-        coeff = torch.tensor(float(__import__('math').comb(degree, i)), dtype=t_values.dtype, device=t_values.device)
+        coeff = torch.tensor(float(math.comb(degree, i)), dtype=t_values.dtype, device=t_values.device)
         basis.append(coeff * (1.0 - t_values) ** (degree - i) * t_values ** i)
     return torch.stack(basis, dim=-1)
+
+
+def get_bezier_basis_torch(
+    degree: int,
+    num_samples: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    key = (int(degree), int(num_samples), str(device), str(dtype))
+    cached = _BASIS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    t_values = torch.linspace(0.0, 1.0, int(num_samples), device=device, dtype=dtype)
+    basis = bernstein_basis_torch(int(degree), t_values)
+    _BASIS_CACHE[key] = basis
+    return basis
 
 
 def sample_bezier_curves_torch(control_points: torch.Tensor, num_samples: int = 16) -> torch.Tensor:
     if control_points.ndim != 3 or control_points.shape[-1] != 2:
         raise ValueError(f'Expected [N, K, 2], got {tuple(control_points.shape)}')
     degree = control_points.shape[1] - 1
-    t_values = torch.linspace(0.0, 1.0, num_samples, device=control_points.device, dtype=control_points.dtype)
-    basis = bernstein_basis_torch(degree, t_values)
+    basis = get_bezier_basis_torch(
+        degree,
+        num_samples,
+        device=control_points.device,
+        dtype=control_points.dtype,
+    )
     return torch.einsum('sk,nkd->nsd', basis, control_points)
 
 

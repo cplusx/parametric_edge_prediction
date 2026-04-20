@@ -135,6 +135,12 @@ Do not rely on a shell alias or PATH being present inside the compute node.
 
 For `parametric_edge_prediction`, use **`sbatch` only**.
 
+Training precision rule for the current repo:
+
+- use **FP32 only**
+- set `trainer.precision: 32-true`
+- do not submit `16-mixed`, `16-true`, `bf16`, or `bf16-mixed`
+
 Do not use `srun` for this repository's training workflow.
 
 Project-specific policy:
