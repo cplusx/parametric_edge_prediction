@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytorch_lightning as pl
 import torch
@@ -148,7 +148,7 @@ def resolve_runtime_scaling(config: Dict[str, Any]) -> Dict[str, Any]:
     return _format_runtime_values(config, context)
 
 
-def resolve_resume_checkpoint(config: Dict[str, Any], explicit_resume_from: str | None) -> str | None:
+def resolve_resume_checkpoint(config: Dict[str, Any], explicit_resume_from: Optional[str]) -> Optional[str]:
     if explicit_resume_from:
         return explicit_resume_from
     trainer_cfg = config.get('trainer', {})
