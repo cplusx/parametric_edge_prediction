@@ -148,6 +148,17 @@ def resolve_runtime_scaling(config: Dict[str, Any]) -> Dict[str, Any]:
     return _format_runtime_values(config, context)
 
 
+def resolve_resume_checkpoint(config: Dict[str, Any], explicit_resume_from: str | None) -> str | None:
+    if explicit_resume_from:
+        return explicit_resume_from
+    trainer_cfg = config.get('trainer', {})
+    if not bool(trainer_cfg.get('auto_resume_from_last', False)):
+        return None
+    root_dir = Path(trainer_cfg['default_root_dir'])
+    last_ckpt = root_dir / 'checkpoints' / 'last.ckpt'
+    return str(last_ckpt) if last_ckpt.is_file() else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
@@ -171,6 +182,9 @@ def main() -> None:
     torch.set_float32_matmul_precision('high')
     root_dir = Path(config['trainer']['default_root_dir'])
     root_dir.mkdir(parents=True, exist_ok=True)
+    resume_from = resolve_resume_checkpoint(config, args.resume_from)
+    if resume_from is not None:
+        print(f"[train] resuming from {resume_from}")
 
     datamodule = build_datamodule(config)
     model = ParametricEdgeLightningModule(config)
@@ -234,7 +248,7 @@ def main() -> None:
         check_val_every_n_epoch=int(config['trainer'].get('check_val_every_n_epoch', 1)),
         use_distributed_sampler=bool(config['trainer'].get('use_distributed_sampler', False)),
     )
-    trainer.fit(model, datamodule=datamodule, ckpt_path=args.resume_from)
+    trainer.fit(model, datamodule=datamodule, ckpt_path=resume_from)
     if bool(config['trainer'].get('run_test_after_fit', True)):
         trainer.test(model=model, datamodule=datamodule, ckpt_path='best')
 

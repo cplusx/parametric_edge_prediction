@@ -83,8 +83,8 @@ model:
 
 loss:
   class_loss_type: focal
-  focal_alpha: 0.25
-  focal_gamma: 2.0
+  focal_alpha: 0.5
+  focal_gamma: 1.0
   chamfer_cost: 5.0
   ce_weight: 1.0
   chamfer_weight: 5.0
@@ -117,6 +117,7 @@ trainer:
   devices: 1
   strategy: auto
   precision: 32-true
+  auto_resume_from_last: true
   accumulate_grad_batches: 1
   effective_batch_size: 4
   log_every_n_steps: 1

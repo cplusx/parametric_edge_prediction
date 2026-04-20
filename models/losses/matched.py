@@ -42,11 +42,10 @@ class ClassificationLoss(BaseLossComponent):
 
     def compute(self, pred_logits: torch.Tensor, target_classes: torch.Tensor, query_weights: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         loss_cfg = self.config['loss']
-        no_object_weight = float(loss_cfg.get('no_object_weight', 0.2))
         dynamic_class_balance = bool(loss_cfg.get('dynamic_class_balance', True))
         loss_type = str(loss_cfg.get('class_loss_type', 'ce'))
-        focal_alpha = float(loss_cfg.get('focal_alpha', 0.25))
-        focal_gamma = float(loss_cfg.get('focal_gamma', 2.0))
+        focal_alpha = float(loss_cfg.get('focal_alpha', 0.5))
+        focal_gamma = float(loss_cfg.get('focal_gamma', 1.0))
 
         balance_weights = None
         balance_normalizer = None
@@ -78,12 +77,7 @@ class ClassificationLoss(BaseLossComponent):
                 torch.full_like(target_object, focal_alpha),
                 torch.full_like(target_object, 1.0 - focal_alpha),
             )
-            focal_core = bce * alpha_t * (1.0 - pt).pow(focal_gamma)
-            focal_loss = torch.where(
-                target_object > 0.5,
-                focal_core,
-                focal_core * torch.full_like(target_object, no_object_weight),
-            )
+            focal_loss = bce * alpha_t * (1.0 - pt).pow(focal_gamma)
             plain_ce = F.cross_entropy(pred_logits.transpose(1, 2), target_classes, reduction='none')
             return {
                 self.loss_name(): reduce_per_sample(focal_loss),
@@ -92,6 +86,7 @@ class ClassificationLoss(BaseLossComponent):
                 'loss_ce': self._weighted_mean(plain_ce, query_weights=query_weights),
             }
 
+        no_object_weight = float(loss_cfg.get('no_object_weight', 0.2))
         class_weight = torch.tensor([1.0, no_object_weight], device=pred_logits.device)
         ce = F.cross_entropy(pred_logits.transpose(1, 2), target_classes, weight=class_weight, reduction='none')
         return {self.loss_name(): reduce_per_sample(ce)}
