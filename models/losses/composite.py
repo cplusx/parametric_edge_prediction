@@ -35,7 +35,7 @@ class ParametricEdgeLossComputer:
         pred_logits = outputs['pred_logits']
         pred_curves = outputs['pred_curves']
         curve_distance_type = curve_distance_type_from_config(self.config)
-        selected: dict[str, list[torch.Tensor]] = {
+        selected: Dict[str, List[torch.Tensor]] = {
             'matching_cost_curve_raw': [],
             'matching_cost_curve': [],
             'matching_cost_edge_prob_raw': [],

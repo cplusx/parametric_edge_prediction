@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 from scipy.optimize import linear_sum_assignment
@@ -94,7 +94,7 @@ class HungarianCurveMatcher:
         logits: torch.Tensor,
         curves: torch.Tensor,
         tgt_curves: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
+    ) -> Dict[str, torch.Tensor]:
         target_is_closed = infer_closed_curves(
             tgt_curves,
             threshold=self.closed_curve_endpoint_dist_threshold,
