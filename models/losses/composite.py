@@ -1,5 +1,8 @@
 from typing import Dict, List
 
+import torch
+
+from models.curve_coordinates import curve_external_to_internal
 from models.losses.matched import MatchedCurveLoss, classification_loss_name_from_config
 from models.losses.regularizers import DenoisingLoss
 from models.matcher import HungarianCurveMatcher
@@ -24,6 +27,38 @@ class ParametricEdgeLossComputer:
             inner_weight = float(loss_cfg.get(term_weight_key, 0.0))
             log_values[f'{raw_key}_weighted'] = log_values[raw_key] * inner_weight
 
+    def _compute_matching_cost_logs(self, outputs: Dict, targets: List[dict], indices: List) -> Dict[str, torch.Tensor]:
+        pred_logits = outputs['pred_logits']
+        pred_curves = outputs['pred_curves']
+        selected: dict[str, list[torch.Tensor]] = {
+            'matching_cost_chamfer_raw': [],
+            'matching_cost_chamfer': [],
+            'matching_cost_edge_prob_raw': [],
+            'matching_cost_edge_prob': [],
+            'matching_cost_total': [],
+        }
+        for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
+            if src_idx.numel() == 0:
+                continue
+            tgt_curves = targets[batch_idx]['curves'][tgt_idx].to(pred_curves.device)
+            tgt_curves = curve_external_to_internal(tgt_curves, self.config)
+            components = self.matcher.build_cost_components(
+                logits=pred_logits[batch_idx],
+                curves=pred_curves[batch_idx],
+                tgt_curves=tgt_curves,
+            )
+            selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][src_idx, tgt_idx])
+            selected['matching_cost_chamfer'].append(components['chamfer'][src_idx, tgt_idx])
+            selected['matching_cost_edge_prob_raw'].append(components['edge_prob_raw'][src_idx, tgt_idx])
+            selected['matching_cost_edge_prob'].append(components['edge_prob'][src_idx, tgt_idx])
+            selected['matching_cost_total'].append(components['total'][src_idx, tgt_idx])
+
+        zero = pred_curves.sum() * 0.0
+        out: Dict[str, torch.Tensor] = {}
+        for key, chunks in selected.items():
+            out[key] = torch.cat(chunks, dim=0).mean().detach() if chunks else zero.detach()
+        return out
+
     def __call__(self, outputs: Dict, targets: List[dict]) -> Dict:
         loss_cfg = self.config['loss']
         aux_reuse_main_matching = bool(loss_cfg.get('aux_reuse_main_matching', False))
@@ -36,6 +71,7 @@ class ParametricEdgeLossComputer:
         total = base['loss_total']
         log_values = {key: value.detach() for key, value in base.items() if key != 'loss_total'}
         self._add_weighted_term_logs(log_values, loss_cfg)
+        log_values.update(self._compute_matching_cost_logs(outputs, targets, indices))
 
         aux_weight = float(loss_cfg.get('aux_weight', 0.5))
         for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):

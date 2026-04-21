@@ -6,13 +6,14 @@ import sys
 from typing import Callable
 
 try:
-    from remote_hosts import run_lab30, wrap_cluster_cmd
+    from remote_hosts import run_lab30, run_lab34, wrap_cluster_cmd
 except ModuleNotFoundError:  # pragma: no cover
-    from scripts.remote_hosts import run_lab30, wrap_cluster_cmd
+    from scripts.remote_hosts import run_lab30, run_lab34, wrap_cluster_cmd
 
 
 LOCAL_REPO = "/Users/jiaxincheng/Desktop/expts/parametric_edge_prediction"
 LAB30_REPO = "/home/viplab/jiaxin/parametric_edge_prediction"
+LAB34_REPO = "/data/jiaxin/parametric_edge_prediction"
 CLUSTER_REPO = "/home/user/yc47434/parametric_edge_prediction"
 
 
@@ -84,8 +85,11 @@ echo "__HEAD__ $(git rev-parse HEAD)"
 
 def sync_remote_repo(label: str, repo: str, branch: str, *, via_cluster: bool = False) -> None:
     def _runner(cmd: str) -> subprocess.CompletedProcess[str]:
-        remote_cmd = wrap_cluster_cmd(cmd) if via_cluster else cmd
-        return run_lab30(remote_cmd, timeout=120)
+        if via_cluster:
+            return run_lab30(wrap_cluster_cmd(cmd), timeout=120)
+        if label == "lab34":
+            return run_lab34(cmd, timeout=120)
+        return run_lab30(cmd, timeout=120)
 
     action, head = _run_remote_sync_script(
         run_remote=_runner,
@@ -104,6 +108,7 @@ def main() -> None:
     branch, head = ensure_local_git_ready()
     print(f"[local] branch={branch} head={head}")
     sync_remote_repo("lab30", LAB30_REPO, branch, via_cluster=False)
+    sync_remote_repo("lab34", LAB34_REPO, branch, via_cluster=False)
     sync_remote_repo("cluster", CLUSTER_REPO, branch, via_cluster=True)
 
 

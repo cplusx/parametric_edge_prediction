@@ -1,0 +1,14 @@
+# Install PyTorch and torchvision separately for the target CUDA setup before this file.
+# Cluster reference: torch==2.4.1+cu121, torchvision==0.19.1+cu121
+
+pytorch-lightning==2.4.0
+numpy==1.24.4
+scipy==1.10.1
+matplotlib==3.7.5
+Pillow==10.4.0
+PyYAML==6.0.2
+wandb==0.18.5
+scikit-image==0.21.0
+imageio==2.35.1
+networkx==3.1
+cffi>=1.16.0

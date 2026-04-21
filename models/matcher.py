@@ -81,15 +81,32 @@ class HungarianCurveMatcher:
         curves: torch.Tensor,
         tgt_curves: torch.Tensor,
     ) -> torch.Tensor:
+        return self.build_cost_components(logits=logits, curves=curves, tgt_curves=tgt_curves)["total"]
+
+    def build_cost_components(
+        self,
+        logits: torch.Tensor,
+        curves: torch.Tensor,
+        tgt_curves: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
         chamfer_cost_matrix = pairwise_curve_chamfer_cost(
             curves,
             tgt_curves,
             point_count=self.chamfer_match_point_count,
         )
-        total = self.chamfer_cost * chamfer_cost_matrix
+        chamfer_weighted = self.chamfer_cost * chamfer_cost_matrix
+        edge_prob_raw = self._edge_prob_cost_matrix(logits, tgt_curves.shape[0]) if self.use_edge_prob_cost_in_matching else logits.new_zeros((logits.shape[0], tgt_curves.shape[0]))
+        edge_prob_weighted = self.edge_prob_cost * edge_prob_raw if self.use_edge_prob_cost_in_matching else edge_prob_raw
+        total = chamfer_weighted
         if self.use_edge_prob_cost_in_matching:
-            total = total + self.edge_prob_cost * self._edge_prob_cost_matrix(logits, tgt_curves.shape[0])
-        return total
+            total = total + edge_prob_weighted
+        return {
+            "chamfer_raw": chamfer_cost_matrix,
+            "chamfer": chamfer_weighted,
+            "edge_prob_raw": edge_prob_raw,
+            "edge_prob": edge_prob_weighted,
+            "total": total,
+        }
 
     @torch.no_grad()
     def __call__(
