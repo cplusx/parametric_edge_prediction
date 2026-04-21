@@ -42,16 +42,17 @@ class ParametricEdgeLossComputer:
                 continue
             tgt_curves = targets[batch_idx]['curves'][tgt_idx].to(pred_curves.device)
             tgt_curves = curve_external_to_internal(tgt_curves, self.config)
+            local_tgt_idx = torch.arange(tgt_idx.numel(), device=src_idx.device)
             components = self.matcher.build_cost_components(
                 logits=pred_logits[batch_idx],
                 curves=pred_curves[batch_idx],
                 tgt_curves=tgt_curves,
             )
-            selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][src_idx, tgt_idx])
-            selected['matching_cost_chamfer'].append(components['chamfer'][src_idx, tgt_idx])
-            selected['matching_cost_edge_prob_raw'].append(components['edge_prob_raw'][src_idx, tgt_idx])
-            selected['matching_cost_edge_prob'].append(components['edge_prob'][src_idx, tgt_idx])
-            selected['matching_cost_total'].append(components['total'][src_idx, tgt_idx])
+            selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][src_idx, local_tgt_idx])
+            selected['matching_cost_chamfer'].append(components['chamfer'][src_idx, local_tgt_idx])
+            selected['matching_cost_edge_prob_raw'].append(components['edge_prob_raw'][src_idx, local_tgt_idx])
+            selected['matching_cost_edge_prob'].append(components['edge_prob'][src_idx, local_tgt_idx])
+            selected['matching_cost_total'].append(components['total'][src_idx, local_tgt_idx])
 
         zero = pred_curves.sum() * 0.0
         out: Dict[str, torch.Tensor] = {}
