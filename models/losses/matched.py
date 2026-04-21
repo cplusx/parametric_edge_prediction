@@ -4,7 +4,13 @@ import torch
 import torch.nn.functional as F
 
 from models.curve_coordinates import curve_external_to_internal
-from models.geometry import symmetric_curve_chamfer_distance
+from models.curve_distances import (
+    build_curve_distance_from_config,
+    closed_curve_endpoint_dist_threshold_from_config,
+    curve_loss_name_from_config,
+    curve_loss_weight_from_config,
+    infer_closed_curves,
+)
 from models.losses.base import BaseLossComponent, balanced_class_weights
 
 
@@ -104,6 +110,9 @@ class MatchedCurveLoss(BaseLossComponent):
     def __init__(self, config: Dict) -> None:
         super().__init__(config)
         self.classification = ClassificationLoss(config)
+        self.curve_loss_name = curve_loss_name_from_config(config)
+        self.curve_distance = build_curve_distance_from_config(config, for_matching=False)
+        self.closed_curve_endpoint_dist_threshold = closed_curve_endpoint_dist_threshold_from_config(config)
 
     def __call__(
         self,
@@ -134,20 +143,26 @@ class MatchedCurveLoss(BaseLossComponent):
         if matched_pred_curves:
             matched_pred_curves = torch.cat(matched_pred_curves, dim=0)
             matched_tgt_curves = torch.cat(matched_tgt_curves, dim=0)
-            loss_chamfer = symmetric_curve_chamfer_distance(
+            target_is_closed = infer_closed_curves(
+                matched_tgt_curves,
+                threshold=self.closed_curve_endpoint_dist_threshold,
+            )
+            loss_curve = self.curve_distance.matched_cost_from_curves(
                 matched_pred_curves,
                 matched_tgt_curves,
-                num_samples=int(loss_cfg.get('chamfer_num_samples', 20)),
-            ).mean()
+                target_is_closed=target_is_closed,
+            ).total.mean()
         else:
             zero = pred_curves.sum() * 0.0
-            loss_chamfer = zero
+            loss_curve = zero
         total = (
             float(weight_cfg.get('ce_weight', 1.0)) * classification_loss
-            + float(weight_cfg.get('chamfer_weight', 5.0)) * loss_chamfer
+            + curve_loss_weight_from_config(self.config, overrides=loss_weight_overrides) * loss_curve
         )
-        return {
+        out = {
             'loss_total': total,
             **classification_terms,
-            'loss_chamfer': loss_chamfer,
+            'loss_curve': loss_curve,
         }
+        out[self.curve_loss_name] = loss_curve
+        return out

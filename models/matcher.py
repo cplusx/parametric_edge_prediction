@@ -3,7 +3,13 @@ from typing import List, Optional, Tuple
 import torch
 from scipy.optimize import linear_sum_assignment
 from models.curve_coordinates import curve_external_to_internal
-from models.geometry import pairwise_curve_chamfer_cost
+from models.curve_distances import (
+    build_curve_distance_from_config,
+    closed_curve_endpoint_dist_threshold_from_config,
+    curve_distance_type_from_config,
+    curve_matching_cost_weight_from_config,
+    infer_closed_curves,
+)
 
 
 def _finite_debug_summary(name: str, tensor: torch.Tensor) -> str:
@@ -31,17 +37,18 @@ class HungarianCurveMatcher:
     def __init__(
         self,
         *,
-        chamfer_cost: float = 5.0,
-        chamfer_match_point_count: int = 20,
+        curve_cost: float = 5.0,
         use_edge_prob_cost_in_matching: bool = False,
         edge_prob_cost: float = 1.0,
         config: dict = None,
     ) -> None:
-        self.chamfer_cost = float(chamfer_cost)
-        self.chamfer_match_point_count = int(chamfer_match_point_count)
+        self.curve_cost = float(curve_cost)
         self.use_edge_prob_cost_in_matching = bool(use_edge_prob_cost_in_matching)
         self.edge_prob_cost = float(edge_prob_cost)
         self.config = config
+        self.curve_distance_type = curve_distance_type_from_config(config or {})
+        self.closed_curve_endpoint_dist_threshold = closed_curve_endpoint_dist_threshold_from_config(config or {})
+        self.curve_distance = build_curve_distance_from_config(config or {}, for_matching=True)
 
     @classmethod
     def from_config(
@@ -53,8 +60,7 @@ class HungarianCurveMatcher:
     ) -> "HungarianCurveMatcher":
         loss_cfg = config.get('loss', {})
         return cls(
-            chamfer_cost=float(loss_cfg.get('chamfer_cost', 5.0)),
-            chamfer_match_point_count=int(loss_cfg.get('chamfer_match_point_count', 20)),
+            curve_cost=curve_matching_cost_weight_from_config(config),
             use_edge_prob_cost_in_matching=(
                 bool(loss_cfg.get('use_edge_prob_cost_in_matching', False))
                 if use_edge_prob_cost_in_matching is None
@@ -89,24 +95,36 @@ class HungarianCurveMatcher:
         curves: torch.Tensor,
         tgt_curves: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        chamfer_cost_matrix = pairwise_curve_chamfer_cost(
+        target_is_closed = infer_closed_curves(
+            tgt_curves,
+            threshold=self.closed_curve_endpoint_dist_threshold,
+        )
+        curve_components = self.curve_distance.pairwise_cost_from_curves(
             curves,
             tgt_curves,
-            point_count=self.chamfer_match_point_count,
+            target_is_closed=target_is_closed,
         )
-        chamfer_weighted = self.chamfer_cost * chamfer_cost_matrix
+        curve_cost_matrix = curve_components["total"]
+        curve_weighted = self.curve_cost * curve_cost_matrix
         edge_prob_raw = self._edge_prob_cost_matrix(logits, tgt_curves.shape[0]) if self.use_edge_prob_cost_in_matching else logits.new_zeros((logits.shape[0], tgt_curves.shape[0]))
         edge_prob_weighted = self.edge_prob_cost * edge_prob_raw if self.use_edge_prob_cost_in_matching else edge_prob_raw
-        total = chamfer_weighted
+        total = curve_weighted
         if self.use_edge_prob_cost_in_matching:
             total = total + edge_prob_weighted
-        return {
-            "chamfer_raw": chamfer_cost_matrix,
-            "chamfer": chamfer_weighted,
+        out = {
+            "curve_raw": curve_cost_matrix,
+            "curve": curve_weighted,
             "edge_prob_raw": edge_prob_raw,
             "edge_prob": edge_prob_weighted,
             "total": total,
         }
+        if self.curve_distance_type == "emd":
+            out["emd_raw"] = curve_cost_matrix
+            out["emd"] = curve_weighted
+        else:
+            out["chamfer_raw"] = curve_cost_matrix
+            out["chamfer"] = curve_weighted
+        return out
 
     @torch.no_grad()
     def __call__(
@@ -167,8 +185,7 @@ def build_curve_cost_matrix(
         )
         if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
         else HungarianCurveMatcher(
-            chamfer_cost=chamfer_cost,
-            chamfer_match_point_count=chamfer_match_point_count,
+            curve_cost=chamfer_cost,
             use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,
@@ -196,8 +213,7 @@ def hungarian_curve_matching(
         )
         if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
         else HungarianCurveMatcher(
-            chamfer_cost=chamfer_cost,
-            chamfer_match_point_count=chamfer_match_point_count,
+            curve_cost=chamfer_cost,
             use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,

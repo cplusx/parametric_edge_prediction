@@ -1,0 +1,74 @@
+data:
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /home/user/yc47434/laion/edge_detection
+      image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+      bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+      batch_glob: batch*
+      entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+      selection_seed: 20260318
+      selection_offset: 2048
+  val_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 0
+    max_samples: 1024
+  test_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 1024
+    max_samples: 1024
+
+loss:
+  curve_distance_type: emd
+  emd_cost: 5.0
+  emd_weight: 5.0
+  emd_num_samples: 20
+  emd_match_point_count: 20
+  emd_sinkhorn_epsilon: 0.02
+  emd_sinkhorn_iters: 80
+  emd_length_weight: 1.0
+  emd_transport_presence_power: 0.5
+  closed_curve_endpoint_dist_threshold: 0.03
+  use_edge_prob_cost_in_matching: true
+  edge_prob_cost: 0.5
+
+trainer:
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-emd-edgeprob05
+  devices: 2
+  strategy: ddp_find_unused_parameters_true
+  precision: 32-true
+  accumulate_grad_batches: auto
+  effective_batch_size: 64
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: false
+    project: laion_parametric_edge_prediction
+    name: laion-dab-v3-cluster-2gpu-emd-edgeprob05
+    group: laion-dab-pretrain
+    job_type: train
+    tags:
+      - laion
+      - cluster
+      - 2gpu
+      - dab
+      - curve
+      - v3
+      - fp32
+      - emd
+      - edgeprob-match
+      - edgeprob05
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-emd-edgeprob05/wandb

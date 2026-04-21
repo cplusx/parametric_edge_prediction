@@ -79,11 +79,24 @@ loss:
   class_loss_type: focal
   focal_alpha: 0.5
   focal_gamma: 1.0
+  curve_distance_type: chamfer
+  curve_cost: null
+  curve_weight: null
   chamfer_cost: 5.0
   ce_weight: 1.0
   chamfer_weight: 5.0
   chamfer_num_samples: 20
   chamfer_match_point_count: 20
+  emd_cost: 5.0
+  emd_weight: 5.0
+  emd_num_samples: 20
+  emd_match_point_count: 20
+  emd_sinkhorn_epsilon: 0.02
+  emd_sinkhorn_iters: 80
+  emd_length_weight: 1.0
+  emd_transport_presence_power: 0.5
+  emd_chunk_size: null
+  closed_curve_endpoint_dist_threshold: 0.03
   no_object_weight: 0.2
   dynamic_class_balance: false
 

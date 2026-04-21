@@ -2,6 +2,7 @@ from typing import Dict, List
 
 import torch
 
+from models.curve_distances import curve_distance_type_from_config, curve_loss_name_from_config
 from models.curve_coordinates import curve_external_to_internal
 from models.losses.matched import MatchedCurveLoss, classification_loss_name_from_config
 from models.losses.regularizers import DenoisingLoss
@@ -17,26 +18,36 @@ class ParametricEdgeLossComputer:
 
     def _add_weighted_term_logs(self, log_values: Dict, loss_cfg: Dict) -> None:
         class_loss_name = classification_loss_name_from_config(self.config)
+        curve_loss_name = curve_loss_name_from_config(self.config)
+        curve_weight_key = 'emd_weight' if curve_distance_type_from_config(self.config) == 'emd' else 'chamfer_weight'
         term_weight_keys = {
             class_loss_name: 'ce_weight',
-            'loss_chamfer': 'chamfer_weight',
+            curve_loss_name: curve_weight_key,
+            'loss_curve': 'curve_weight',
         }
         for raw_key, term_weight_key in term_weight_keys.items():
             if raw_key not in log_values:
                 continue
-            inner_weight = float(loss_cfg.get(term_weight_key, 0.0))
+            inner_weight = float(loss_cfg.get(term_weight_key, loss_cfg.get(curve_weight_key, 0.0) if raw_key == 'loss_curve' else 0.0))
             log_values[f'{raw_key}_weighted'] = log_values[raw_key] * inner_weight
 
     def _compute_matching_cost_logs(self, outputs: Dict, targets: List[dict], indices: List) -> Dict[str, torch.Tensor]:
         pred_logits = outputs['pred_logits']
         pred_curves = outputs['pred_curves']
+        curve_distance_type = curve_distance_type_from_config(self.config)
         selected: dict[str, list[torch.Tensor]] = {
-            'matching_cost_chamfer_raw': [],
-            'matching_cost_chamfer': [],
+            'matching_cost_curve_raw': [],
+            'matching_cost_curve': [],
             'matching_cost_edge_prob_raw': [],
             'matching_cost_edge_prob': [],
             'matching_cost_total': [],
         }
+        if curve_distance_type == 'emd':
+            selected['matching_cost_emd_raw'] = []
+            selected['matching_cost_emd'] = []
+        else:
+            selected['matching_cost_chamfer_raw'] = []
+            selected['matching_cost_chamfer'] = []
         for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
             if src_idx.numel() == 0:
                 continue
@@ -48,11 +59,17 @@ class ParametricEdgeLossComputer:
                 curves=pred_curves[batch_idx],
                 tgt_curves=tgt_curves,
             )
-            selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][src_idx, local_tgt_idx])
-            selected['matching_cost_chamfer'].append(components['chamfer'][src_idx, local_tgt_idx])
+            selected['matching_cost_curve_raw'].append(components['curve_raw'][src_idx, local_tgt_idx])
+            selected['matching_cost_curve'].append(components['curve'][src_idx, local_tgt_idx])
             selected['matching_cost_edge_prob_raw'].append(components['edge_prob_raw'][src_idx, local_tgt_idx])
             selected['matching_cost_edge_prob'].append(components['edge_prob'][src_idx, local_tgt_idx])
             selected['matching_cost_total'].append(components['total'][src_idx, local_tgt_idx])
+            if curve_distance_type == 'emd':
+                selected['matching_cost_emd_raw'].append(components['emd_raw'][src_idx, local_tgt_idx])
+                selected['matching_cost_emd'].append(components['emd'][src_idx, local_tgt_idx])
+            else:
+                selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][src_idx, local_tgt_idx])
+                selected['matching_cost_chamfer'].append(components['chamfer'][src_idx, local_tgt_idx])
 
         zero = pred_curves.sum() * 0.0
         out: Dict[str, torch.Tensor] = {}
