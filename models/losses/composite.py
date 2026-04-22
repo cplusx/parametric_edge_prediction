@@ -28,7 +28,12 @@ class ParametricEdgeLossComputer:
         for raw_key, term_weight_key in term_weight_keys.items():
             if raw_key not in log_values:
                 continue
-            inner_weight = float(loss_cfg.get(term_weight_key, loss_cfg.get(curve_weight_key, 0.0) if raw_key == 'loss_curve' else 0.0))
+            value = loss_cfg.get(term_weight_key)
+            if value is None and raw_key == 'loss_curve':
+                value = loss_cfg.get(curve_weight_key)
+            if value is None:
+                value = 0.0
+            inner_weight = float(value)
             log_values[f'{raw_key}_weighted'] = log_values[raw_key] * inner_weight
 
     def _compute_matching_cost_logs(self, outputs: Dict, targets: List[dict], indices: List) -> Dict[str, torch.Tensor]:
