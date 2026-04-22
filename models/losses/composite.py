@@ -99,16 +99,17 @@ class ParametricEdgeLossComputer:
         self._add_weighted_term_logs(log_values, loss_cfg)
         log_values.update(self._compute_matching_cost_logs(outputs, targets, indices))
 
-        aux_weight = float(loss_cfg.get('aux_weight', 0.5))
-        for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
-            aux_indices = indices if aux_reuse_main_matching else self.matcher(
-                logits=aux['pred_logits'],
-                curves=aux['pred_curves'],
-                targets=targets,
-            )
-            aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
-            total = total + aux_weight * aux_losses['loss_total']
-            log_values[f'loss_aux_{level_idx}'] = aux_losses['loss_total'].detach()
+        aux_weight = float(loss_cfg.get('aux_weight', 0.0))
+        if aux_weight > 0.0:
+            for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
+                aux_indices = indices if aux_reuse_main_matching else self.matcher(
+                    logits=aux['pred_logits'],
+                    curves=aux['pred_curves'],
+                    targets=targets,
+                )
+                aux_losses = self.matched_curve_loss(aux['pred_curves'], aux['pred_logits'], targets, aux_indices, aux)
+                total = total + aux_weight * aux_losses['loss_total']
+                log_values[f'loss_aux_{level_idx}'] = aux_losses['loss_total'].detach()
 
         dn = self.denoising_loss(outputs)
         total = total + dn['loss_dn']

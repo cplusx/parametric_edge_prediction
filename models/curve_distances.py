@@ -141,7 +141,7 @@ def build_curve_distance_from_config(config: Dict, *, for_matching: bool):
         return SinkhornEMDCurveDistance(
             num_samples=sample_count,
             sinkhorn_epsilon=float(loss_cfg.get("emd_sinkhorn_epsilon", 0.02)),
-            sinkhorn_iters=int(loss_cfg.get("emd_sinkhorn_iters", 80)),
+            sinkhorn_iters=int(loss_cfg.get("emd_sinkhorn_iters", 10)),
             length_weight=float(loss_cfg.get("emd_length_weight", 1.0)),
             transport_presence_power=float(loss_cfg.get("emd_transport_presence_power", 0.5)),
             chunk_size=loss_cfg.get("emd_chunk_size"),

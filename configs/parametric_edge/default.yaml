@@ -92,7 +92,7 @@ loss:
   emd_num_samples: 20
   emd_match_point_count: 20
   emd_sinkhorn_epsilon: 0.02
-  emd_sinkhorn_iters: 80
+  emd_sinkhorn_iters: 10
   emd_length_weight: 1.0
   emd_transport_presence_power: 0.5
   emd_chunk_size: null
