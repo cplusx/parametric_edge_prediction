@@ -167,7 +167,14 @@ class ChamferCurveDistance:
         total = 0.5 * (pred_to_tgt + tgt_to_pred)
         return CurveDistanceOutput(total=total, primary=total)
 
-    def matched_cost_from_curves(self, pred_curves: torch.Tensor, tgt_curves: torch.Tensor) -> CurveDistanceOutput:
+    def matched_cost_from_curves(
+        self,
+        pred_curves: torch.Tensor,
+        tgt_curves: torch.Tensor,
+        *,
+        target_is_closed: Optional[torch.Tensor] = None,
+    ) -> CurveDistanceOutput:
+        del target_is_closed
         return self.matched_cost_from_samples(self.sample_curves(pred_curves), self.sample_curves(tgt_curves))
 
     def pairwise_cost_from_curves(
