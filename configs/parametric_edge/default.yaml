@@ -97,6 +97,7 @@ loss:
   emd_transport_presence_power: 0.5
   emd_chunk_size: null
   closed_curve_endpoint_dist_threshold: 0.03
+  edge_prob_cost: 0.5
   no_object_weight: 0.2
   dynamic_class_balance: false
 

@@ -29,6 +29,9 @@ data:
     selection_offset: 1024
     max_samples: 1024
 
+model:
+  curve_query_init_type: random
+
 trainer:
   default_root_dir: /data/jiaxin/parametric_edge_prediction/outputs/laion-dab-v3-lab34-edgeprob05
   devices: 2
@@ -38,7 +41,6 @@ trainer:
   effective_batch_size: 64
 
 loss:
-  use_edge_prob_cost_in_matching: true
   edge_prob_cost: 0.5
 
 logging:

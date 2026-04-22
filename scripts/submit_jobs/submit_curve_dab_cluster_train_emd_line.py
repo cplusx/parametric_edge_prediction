@@ -14,15 +14,15 @@ from scripts.remote_hosts import run_lab30, wrap_cluster_cmd  # noqa: E402
 
 CLUSTER_REPO = "/home/user/yc47434/parametric_edge_prediction"
 CLUSTER_RUN_ROOT = "/home/user/yc47434/cluster_runs/parametric_edge_prediction"
-CONFIG_PATH = "configs/parametric_edge/laion_curve_pretrain_cluster_v3_2gpu_emd_edgeprob05.yaml"
-SBATCH_PATH = f"{CLUSTER_REPO}/cluster_tasks/train_curve_dab_v3_2gpu_emd_edgeprob05.sbatch"
+CONFIG_PATH = "configs/parametric_edge/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml"
+SBATCH_PATH = f"{CLUSTER_REPO}/cluster_tasks/train_curve_dab_v3_2gpu_emd_line.sbatch"
 
 
 def build_sbatch() -> str:
     return dedent(
         f"""\
         #!/usr/bin/env bash
-        #SBATCH -J curve-dab-v3-2gpu-emd-eprob05
+        #SBATCH -J curve-dab-v3-2gpu-emd-line
         #SBATCH -p gbunchQ
         #SBATCH --gres=gpu:2
         #SBATCH -c 32
@@ -75,7 +75,7 @@ def submit(sbatch_text: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Print or submit the 2-GPU cluster curve DAB EMD+edgeprob training job.")
+    parser = argparse.ArgumentParser(description="Print or submit the 2-GPU cluster curve DAB EMD line-init training job.")
     parser.add_argument("--submit", action="store_true", help="actually submit after printing")
     args = parser.parse_args()
 

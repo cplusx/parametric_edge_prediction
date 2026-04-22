@@ -29,6 +29,9 @@ data:
     selection_offset: 1024
     max_samples: 1024
 
+model:
+  curve_query_init_type: random
+
 trainer:
   default_root_dir: /home/viplab/jiaxin/parametric_edge_prediction/outputs/parametric_edge_training/laion-dab-v3-lab30-2gpu-dn-aux-ce
   devices: 2

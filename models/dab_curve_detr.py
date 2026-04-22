@@ -8,6 +8,7 @@ import torchvision
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from models.curve_coordinates import curve_external_to_internal
+from models.curve_query_initializers import build_curve_query_initializer
 from models.position_encoding import PositionEmbeddingSine
 
 
@@ -576,6 +577,7 @@ class DABCurveDETR(nn.Module):
         self.refpoint_embed = nn.Embedding(self.num_queries, self.curve_dim)
         self.dn_content_embed = nn.Embedding(1, self.hidden_dim)
         self.dn_label_embed = nn.Embedding(2, self.hidden_dim) if self.dn_use_label_embed else None
+        self.curve_query_initializer = build_curve_query_initializer(config)
 
         nn.init.constant_(self.class_embed.bias[0], self.object_bias)
         nn.init.constant_(self.class_embed.bias[1], self.no_object_bias)
@@ -583,12 +585,12 @@ class DABCurveDETR(nn.Module):
 
     def _init_reference_curves(self) -> None:
         with torch.no_grad():
-            side = int(math.ceil(math.sqrt(float(self.num_queries))))
-            ys = torch.linspace(0.05, 0.95, side)
-            xs = torch.linspace(0.05, 0.95, side)
-            grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
-            refs = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)[: self.num_queries].clamp(1e-4, 1.0 - 1e-4)
-            init_curve = refs.unsqueeze(1).expand(-1, self.num_control_points, -1).reshape(self.num_queries, self.curve_dim)
+            init_curve = self.curve_query_initializer.initialize(
+                num_queries=self.num_queries,
+                num_control_points=self.num_control_points,
+                device=self.refpoint_embed.weight.device,
+                dtype=self.refpoint_embed.weight.dtype,
+            ).reshape(self.num_queries, self.curve_dim)
             self.refpoint_embed.weight.copy_(inverse_sigmoid(init_curve))
 
     def set_epoch(self, epoch: int) -> None:
@@ -663,7 +665,6 @@ class DABCurveDETR(nn.Module):
         positive_pad = max_targets
         group_pad = positive_pad * (2 if self.dn_use_cdn else 1)
         pad_size = group_pad * self.num_dn_groups
-        eps = 1e-4
 
         dn_ref_curves = torch.full(
             (batch_size, pad_size, self.num_control_points, 2),

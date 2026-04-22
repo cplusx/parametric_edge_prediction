@@ -38,12 +38,10 @@ class HungarianCurveMatcher:
         self,
         *,
         curve_cost: float = 5.0,
-        use_edge_prob_cost_in_matching: bool = False,
         edge_prob_cost: float = 1.0,
         config: dict = None,
     ) -> None:
         self.curve_cost = float(curve_cost)
-        self.use_edge_prob_cost_in_matching = bool(use_edge_prob_cost_in_matching)
         self.edge_prob_cost = float(edge_prob_cost)
         self.config = config
         self.curve_distance_type = curve_distance_type_from_config(config or {})
@@ -55,17 +53,11 @@ class HungarianCurveMatcher:
         cls,
         config: dict,
         *,
-        use_edge_prob_cost_in_matching: Optional[bool] = None,
         edge_prob_cost: Optional[float] = None,
     ) -> "HungarianCurveMatcher":
         loss_cfg = config.get('loss', {})
         return cls(
             curve_cost=curve_matching_cost_weight_from_config(config),
-            use_edge_prob_cost_in_matching=(
-                bool(loss_cfg.get('use_edge_prob_cost_in_matching', False))
-                if use_edge_prob_cost_in_matching is None
-                else bool(use_edge_prob_cost_in_matching)
-            ),
             edge_prob_cost=(
                 float(loss_cfg.get('edge_prob_cost', 1.0))
                 if edge_prob_cost is None
@@ -106,11 +98,9 @@ class HungarianCurveMatcher:
         )
         curve_cost_matrix = curve_components["total"]
         curve_weighted = self.curve_cost * curve_cost_matrix
-        edge_prob_raw = self._edge_prob_cost_matrix(logits, tgt_curves.shape[0]) if self.use_edge_prob_cost_in_matching else logits.new_zeros((logits.shape[0], tgt_curves.shape[0]))
-        edge_prob_weighted = self.edge_prob_cost * edge_prob_raw if self.use_edge_prob_cost_in_matching else edge_prob_raw
-        total = curve_weighted
-        if self.use_edge_prob_cost_in_matching:
-            total = total + edge_prob_weighted
+        edge_prob_raw = self._edge_prob_cost_matrix(logits, tgt_curves.shape[0])
+        edge_prob_weighted = self.edge_prob_cost * edge_prob_raw
+        total = curve_weighted + edge_prob_weighted
         out = {
             "curve_raw": curve_cost_matrix,
             "curve": curve_weighted,
@@ -173,20 +163,17 @@ def build_curve_cost_matrix(
     tgt_curves: torch.Tensor,
     chamfer_cost: float,
     chamfer_match_point_count: int,
-    use_edge_prob_cost_in_matching: Optional[bool] = None,
     edge_prob_cost: Optional[float] = None,
     config: dict = None,
 ) -> torch.Tensor:
     matcher = (
         HungarianCurveMatcher.from_config(
             config,
-            use_edge_prob_cost_in_matching=use_edge_prob_cost_in_matching,
             edge_prob_cost=edge_prob_cost,
         )
-        if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
+        if config is not None and edge_prob_cost is None
         else HungarianCurveMatcher(
             curve_cost=chamfer_cost,
-            use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,
         )
@@ -201,20 +188,17 @@ def hungarian_curve_matching(
     targets: List[dict],
     chamfer_cost: float = 5.0,
     chamfer_match_point_count: int = 20,
-    use_edge_prob_cost_in_matching: Optional[bool] = None,
     edge_prob_cost: Optional[float] = None,
     config: dict = None,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     matcher = (
         HungarianCurveMatcher.from_config(
             config,
-            use_edge_prob_cost_in_matching=use_edge_prob_cost_in_matching,
             edge_prob_cost=edge_prob_cost,
         )
-        if config is not None and (use_edge_prob_cost_in_matching is None or edge_prob_cost is None)
+        if config is not None and edge_prob_cost is None
         else HungarianCurveMatcher(
             curve_cost=chamfer_cost,
-            use_edge_prob_cost_in_matching=bool(use_edge_prob_cost_in_matching) if use_edge_prob_cost_in_matching is not None else False,
             edge_prob_cost=float(edge_prob_cost) if edge_prob_cost is not None else 1.0,
             config=config,
         )

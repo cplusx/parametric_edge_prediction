@@ -30,10 +30,23 @@ data:
     max_samples: 1024
 
 model:
-  curve_query_init_type: random
+  curve_query_init_type: line
+
+loss:
+  curve_distance_type: emd
+  emd_cost: 5.0
+  emd_weight: 5.0
+  emd_num_samples: 20
+  emd_match_point_count: 20
+  emd_sinkhorn_epsilon: 0.02
+  emd_sinkhorn_iters: 80
+  emd_length_weight: 1.0
+  emd_transport_presence_power: 0.5
+  closed_curve_endpoint_dist_threshold: 0.03
+  edge_prob_cost: 0.5
 
 trainer:
-  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-dn-aux-ce
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-emd-line
   devices: 2
   strategy: ddp_find_unused_parameters_true
   precision: 32-true
@@ -46,7 +59,7 @@ logging:
     enabled: true
     offline: false
     project: laion_parametric_edge_prediction
-    name: laion-dab-v3-cluster-2gpu-dn-aux-ce
+    name: laion-dab-v3-cluster-2gpu-emd-line
     group: laion-dab-pretrain
     job_type: train
     tags:
@@ -57,8 +70,8 @@ logging:
       - curve
       - v3
       - fp32
-      - dn
-      - aux
-      - ce
-      - chamfer
-    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-dn-aux-ce/wandb
+      - emd
+      - edgeprob-match
+      - edgeprob05
+      - line-init
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-emd-line/wandb

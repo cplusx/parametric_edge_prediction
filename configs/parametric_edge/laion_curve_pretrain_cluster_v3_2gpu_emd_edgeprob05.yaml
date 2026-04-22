@@ -29,6 +29,9 @@ data:
     selection_offset: 1024
     max_samples: 1024
 
+model:
+  curve_query_init_type: line
+
 loss:
   curve_distance_type: emd
   emd_cost: 5.0
@@ -40,7 +43,6 @@ loss:
   emd_length_weight: 1.0
   emd_transport_presence_power: 0.5
   closed_curve_endpoint_dist_threshold: 0.03
-  use_edge_prob_cost_in_matching: true
   edge_prob_cost: 0.5
 
 trainer:

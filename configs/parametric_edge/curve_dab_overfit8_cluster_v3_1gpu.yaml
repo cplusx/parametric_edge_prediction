@@ -73,6 +73,7 @@ model:
   gradient_checkpointing: false
   curve_coord_min: -0.1
   curve_coord_max: 1.1
+  curve_query_init_type: random
   object_bias: -2.0
   no_object_bias: 2.0
   dn_enabled: true

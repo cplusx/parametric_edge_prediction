@@ -36,6 +36,7 @@ class ParametricEdgeLossComputer:
             inner_weight = float(value)
             log_values[f'{raw_key}_weighted'] = log_values[raw_key] * inner_weight
 
+    @torch.no_grad()
     def _compute_matching_cost_logs(self, outputs: Dict, targets: List[dict], indices: List) -> Dict[str, torch.Tensor]:
         pred_logits = outputs['pred_logits']
         pred_curves = outputs['pred_curves']
