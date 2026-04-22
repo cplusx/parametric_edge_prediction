@@ -86,8 +86,9 @@ def curve_loss_name_from_config(config: Dict) -> str:
 def curve_matching_cost_weight_from_config(config: Dict) -> float:
     loss_cfg = config.get("loss", {}) if isinstance(config, dict) else {}
     curve_type = curve_distance_type_from_config(config)
-    if "curve_cost" in loss_cfg:
-        return float(loss_cfg["curve_cost"])
+    curve_cost = loss_cfg.get("curve_cost")
+    if curve_cost is not None:
+        return float(curve_cost)
     if curve_type == "emd":
         return float(loss_cfg.get("emd_cost", loss_cfg.get("chamfer_cost", 5.0)))
     return float(loss_cfg.get("chamfer_cost", 5.0))
@@ -96,8 +97,9 @@ def curve_matching_cost_weight_from_config(config: Dict) -> float:
 def curve_loss_weight_from_config(config: Dict, *, overrides: Optional[Dict[str, float]] = None) -> float:
     weight_cfg = config.get("loss", {}) if overrides is None else {**config.get("loss", {}), **overrides}
     curve_type = curve_distance_type_from_config(config)
-    if "curve_weight" in weight_cfg:
-        return float(weight_cfg["curve_weight"])
+    curve_weight = weight_cfg.get("curve_weight")
+    if curve_weight is not None:
+        return float(curve_weight)
     if curve_type == "emd":
         return float(weight_cfg.get("emd_weight", weight_cfg.get("chamfer_weight", 5.0)))
     return float(weight_cfg.get("chamfer_weight", 5.0))
