@@ -32,6 +32,7 @@ def render_endpoint_attach_frame(
     title: str,
     matched_indices: Optional[Tuple[Iterable[int], Iterable[int]]] = None,
     highlight_point_index: Optional[int] = None,
+    highlight_pred_index: Optional[int] = None,
 ) -> np.ndarray:
     curves = _as_numpy(target.get("curves", np.zeros((0, 2, 2), dtype=np.float32)))
     points = _as_numpy(target.get("points", np.zeros((0, 2), dtype=np.float32)))
@@ -41,6 +42,16 @@ def render_endpoint_attach_frame(
 
     fig, ax = plt.subplots(figsize=(5, 5), dpi=120)
     _draw_curves(ax, curves, color="#2f6fdb", linewidth=1.4)
+
+    if highlight_point_index is not None and curves.size:
+        offsets = _as_numpy(target.get("point_curve_offsets", np.zeros((points.shape[0] + 1,), dtype=np.int64))).astype(np.int64)
+        curve_indices = _as_numpy(target.get("point_curve_indices", np.zeros((0,), dtype=np.int64))).astype(np.int64)
+        idx = int(highlight_point_index)
+        if 0 <= idx < points.shape[0] and idx + 1 < offsets.shape[0]:
+            incident = curve_indices[offsets[idx]: offsets[idx + 1]]
+            valid = incident[(incident >= 0) & (incident < curves.shape[0])]
+            if valid.size:
+                _draw_curves(ax, curves[valid], color="#ff8c00", linewidth=3.0, alpha=0.9)
 
     if points.size:
         high = (degrees >= 3) & (~loop_only)
@@ -83,7 +94,11 @@ def render_endpoint_attach_frame(
     if highlight_point_index is not None and points.size:
         idx = int(highlight_point_index)
         if 0 <= idx < points.shape[0]:
-            ax.scatter([points[idx, 0]], [points[idx, 1]], s=150, facecolors="none", edgecolors="#000000", linewidths=2.0, zorder=10)
+            ax.scatter([points[idx, 0]], [points[idx, 1]], s=180, facecolors="none", edgecolors="#000000", linewidths=2.2, zorder=10, label="focus GT")
+    if highlight_pred_index is not None and pred_points.size:
+        idx = int(highlight_pred_index)
+        if 0 <= idx < pred_points.shape[0]:
+            ax.scatter([pred_points[idx, 0]], [pred_points[idx, 1]], s=210, facecolors="none", edgecolors="#cc00ff", linewidths=2.4, zorder=11, label="focus pred")
 
     ax.set_title(title, fontsize=9)
     ax.set_xlim(-0.05, 1.05)

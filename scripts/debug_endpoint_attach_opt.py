@@ -137,6 +137,7 @@ def _optimize(
                     matched_indices=matched,
                     title=title,
                     highlight_point_index=highlight_idx,
+                    highlight_pred_index=highlight_idx,
                 )
             )
         if step == int(iterations):
