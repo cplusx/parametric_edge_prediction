@@ -93,6 +93,7 @@ def _optimize(
     lr: float,
     frame_every: int,
     loop_focus: bool,
+    gif_fps: float,
 ) -> None:
     run_config = copy.deepcopy(config)
     run_config.setdefault("loss", {})["endpoint_loss_type"] = "attach" if use_attach else "l1"
@@ -139,7 +140,7 @@ def _optimize(
         losses["loss_total"].backward()
         optimizer.step()
         pred_points.data.clamp_(1e-4, 1.0 - 1e-4)
-    save_frames_as_gif(frames, output_path, fps=3.0)
+    save_frames_as_gif(frames, output_path, fps=gif_fps)
 
 
 def main() -> None:
@@ -150,6 +151,7 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=120)
     parser.add_argument("--lr", type=float, default=0.04)
     parser.add_argument("--frame-every", type=int, default=4)
+    parser.add_argument("--gif-fps", type=float, default=0.3)
     parser.add_argument("--loop-focus", action="store_true")
     args = parser.parse_args()
 
@@ -168,6 +170,7 @@ def main() -> None:
         lr=args.lr,
         frame_every=args.frame_every,
         loop_focus=args.loop_focus,
+        gif_fps=args.gif_fps,
     )
     _optimize(
         target=target,
@@ -178,6 +181,7 @@ def main() -> None:
         lr=args.lr,
         frame_every=args.frame_every,
         loop_focus=args.loop_focus,
+        gif_fps=args.gif_fps,
     )
     print(f"sample_id={target.get('sample_id')}")
     print(f"wrote {output_dir / 'baseline_l1_only.gif'}")

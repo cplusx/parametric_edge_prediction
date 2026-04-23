@@ -98,7 +98,7 @@ def render_endpoint_attach_frame(
     return frame
 
 
-def save_frames_as_gif(frames: List[np.ndarray], path: Path, *, fps: float = 3.0) -> None:
+def save_frames_as_gif(frames: List[np.ndarray], path: Path, *, fps: float = 0.3) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     duration = 1.0 / max(float(fps), 1e-6)
