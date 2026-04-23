@@ -27,6 +27,8 @@ def _force_attach_config(config: Dict) -> Dict:
     config["data"].setdefault("endpoint_closed_curve_threshold_px", 2.0)
     config.setdefault("loss", {})["endpoint_loss_type"] = "attach"
     config["loss"].setdefault("point_attach_weight", 1.0)
+    config["loss"].setdefault("point_attach_matching_enabled", True)
+    config["loss"].setdefault("point_attach_matching_cost", 1.0)
     config["loss"].setdefault("point_attach_low_degree_multiplier", 5.0)
     config["loss"].setdefault("point_attach_degree_threshold", 3)
     config["loss"].setdefault("point_attach_num_curve_samples", 8)

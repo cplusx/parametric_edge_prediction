@@ -121,6 +121,56 @@ def point_to_segments_distance(points: torch.Tensor, segments: torch.Tensor) -> 
     return (points.view(points.shape[0], *([1] * (starts.ndim - 1)), 2) - projection).norm(dim=-1)
 
 
+def point_to_curve_distance_matrix(
+    points: torch.Tensor,
+    target_curves: torch.Tensor,
+    num_curve_samples: int,
+) -> torch.Tensor:
+    if points.numel() == 0:
+        curve_count = int(target_curves.shape[0]) if target_curves.ndim >= 1 else 0
+        return points.new_zeros((points.shape[0], curve_count))
+    if target_curves.numel() == 0:
+        return points.new_zeros((points.shape[0], 0))
+    segments = sample_curve_segments(target_curves, num_samples=num_curve_samples)
+    segment_distances = point_to_segments_distance(points, segments)
+    return segment_distances.min(dim=2).values
+
+
+def point_to_endpoint_incident_curve_distance_matrix(
+    pred_points: torch.Tensor,
+    target_curves: torch.Tensor,
+    point_curve_offsets: torch.Tensor,
+    point_curve_indices: torch.Tensor,
+    num_curve_samples: int,
+) -> torch.Tensor:
+    if pred_points.numel() == 0:
+        target_count = max(0, int(point_curve_offsets.numel()) - 1)
+        return pred_points.new_zeros((pred_points.shape[0], target_count))
+    target_count = max(0, int(point_curve_offsets.numel()) - 1)
+    if target_count == 0:
+        return pred_points.new_zeros((pred_points.shape[0], 0))
+    if target_curves.numel() == 0:
+        return pred_points.new_zeros((pred_points.shape[0], target_count))
+    curve_distances = point_to_curve_distance_matrix(
+        pred_points,
+        target_curves,
+        num_curve_samples=num_curve_samples,
+    )
+    out = pred_points.new_zeros((pred_points.shape[0], target_count))
+    curve_count = int(target_curves.shape[0])
+    for point_idx in range(target_count):
+        start = int(point_curve_offsets[point_idx].item())
+        end = int(point_curve_offsets[point_idx + 1].item())
+        incident = point_curve_indices[start:end]
+        if incident.numel() == 0:
+            continue
+        valid = incident[(incident >= 0) & (incident < curve_count)].to(device=pred_points.device, dtype=torch.long)
+        if valid.numel() == 0:
+            continue
+        out[:, point_idx] = curve_distances.index_select(1, valid).min(dim=1).values
+    return out
+
+
 def point_to_incident_curves_attach_distance(
     pred_points: torch.Tensor,
     target_curves: torch.Tensor,

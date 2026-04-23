@@ -104,6 +104,8 @@ loss:
   no_object_weight: 0.2
   dynamic_class_balance: false
   endpoint_loss_type: l1
+  point_attach_matching_enabled: false
+  point_attach_matching_cost: 1.0
   point_attach_weight: 1.0
   point_attach_low_degree_multiplier: 5.0
   point_attach_degree_threshold: 3

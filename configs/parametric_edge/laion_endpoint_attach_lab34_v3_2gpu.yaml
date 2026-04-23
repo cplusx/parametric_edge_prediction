@@ -35,6 +35,8 @@ model:
 loss:
   edge_prob_cost: 0.5
   endpoint_loss_type: attach
+  point_attach_matching_enabled: true
+  point_attach_matching_cost: 1.0
   point_attach_weight: 1.0
   point_attach_low_degree_multiplier: 5.0
   point_attach_degree_threshold: 3
