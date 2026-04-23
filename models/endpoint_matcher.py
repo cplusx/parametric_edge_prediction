@@ -32,13 +32,11 @@ class HungarianPointMatcher:
         self,
         *,
         point_cost: float = 5.0,
-        use_class_prob_cost: bool = True,
-        class_prob_cost: float = 1.0,
+        edge_prob_cost: float = 1.0,
         config: Optional[dict] = None,
     ) -> None:
         self.point_cost = float(point_cost)
-        self.use_class_prob_cost = bool(use_class_prob_cost)
-        self.class_prob_cost = float(class_prob_cost)
+        self.edge_prob_cost = float(edge_prob_cost)
         self.config = config
 
     @classmethod
@@ -46,13 +44,12 @@ class HungarianPointMatcher:
         loss_cfg = config.get('loss', {})
         return cls(
             point_cost=float(loss_cfg.get('point_cost', 5.0)),
-            use_class_prob_cost=bool(loss_cfg.get('use_class_prob_cost_in_matching', True)),
-            class_prob_cost=float(loss_cfg.get('class_prob_cost', 1.0)),
+            edge_prob_cost=float(loss_cfg.get('edge_prob_cost', 1.0)),
             config=config,
         )
 
     @staticmethod
-    def _class_prob_cost_matrix(logits: torch.Tensor, target_count: int) -> torch.Tensor:
+    def _edge_prob_cost_matrix(logits: torch.Tensor, target_count: int) -> torch.Tensor:
         if target_count <= 0:
             return logits.new_zeros((logits.shape[0], 0))
         edge_prob = logits.softmax(-1)[:, 0]
@@ -60,9 +57,7 @@ class HungarianPointMatcher:
 
     def build_cost_matrix(self, logits: torch.Tensor, points: torch.Tensor, tgt_points: torch.Tensor) -> torch.Tensor:
         total = self.point_cost * torch.cdist(points, tgt_points, p=1)
-        if self.use_class_prob_cost:
-            total = total + self.class_prob_cost * self._class_prob_cost_matrix(logits, tgt_points.shape[0])
-        return total
+        return total + self.edge_prob_cost * self._edge_prob_cost_matrix(logits, tgt_points.shape[0])
 
     @torch.no_grad()
     def __call__(

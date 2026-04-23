@@ -25,15 +25,16 @@ class EndpointLossComputer:
         log_values = {key: value.detach() for key, value in base.items() if key != 'loss_total'}
 
         aux_weight = float(loss_cfg.get('aux_weight', 0.0))
-        for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
-            aux_indices = indices if aux_reuse_main_matching else self.matcher(
-                logits=aux['pred_logits'],
-                points=aux['pred_points'],
-                targets=targets,
-            )
-            aux_losses = self.matched_point_loss(aux['pred_points'], aux['pred_logits'], targets, aux_indices, aux)
-            total = total + aux_weight * aux_losses['loss_total']
-            log_values[f'loss_aux_{level_idx}'] = aux_losses['loss_total'].detach()
+        if aux_weight > 0.0:
+            for level_idx, aux in enumerate(outputs.get('aux_outputs', [])):
+                aux_indices = indices if aux_reuse_main_matching else self.matcher(
+                    logits=aux['pred_logits'],
+                    points=aux['pred_points'],
+                    targets=targets,
+                )
+                aux_losses = self.matched_point_loss(aux['pred_points'], aux['pred_logits'], targets, aux_indices, aux)
+                total = total + aux_weight * aux_losses['loss_total']
+                log_values[f'loss_aux_{level_idx}'] = aux_losses['loss_total'].detach()
 
         dn_losses = self.denoising_loss(outputs)
         total = total + dn_losses['loss_dn']
