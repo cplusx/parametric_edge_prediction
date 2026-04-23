@@ -90,6 +90,10 @@ class ParametricEndpointDataset(Dataset):
             max_targets=self.max_targets,
         )
 
+    @staticmethod
+    def _rng_for_index(index: int) -> np.random.Generator:
+        return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+
     def _build_item(self, index: int) -> Dict:
         curve_path = self.curve_paths[index]
         target_cache = self._load_curve_targets(index)
@@ -103,7 +107,7 @@ class ParametricEndpointDataset(Dataset):
                 curves=curves,
                 image_size=self.image_size,
                 augment_cfg=self.augment_cfg,
-                rng=np.random.default_rng((torch.initial_seed() + index) % (2 ** 32)),
+                rng=rng,
                 dedupe_distance_px=self.endpoint_dedupe_distance_px,
                 max_targets=self.max_targets,
             )
@@ -175,6 +179,10 @@ class LaionSyntheticEndpointDataset(Dataset):
             max_targets=self.max_targets,
         )
 
+    @staticmethod
+    def _rng_for_index(index: int) -> np.random.Generator:
+        return np.random.default_rng((torch.initial_seed() + index) % (2 ** 32))
+
     def _build_item(self, index: int) -> Dict:
         record = self.sample_records[index]
         target_cache = self._load_curve_targets(index)
@@ -187,7 +195,7 @@ class LaionSyntheticEndpointDataset(Dataset):
                 curves=curves,
                 image_size=self.image_size,
                 augment_cfg=self.augment_cfg,
-                rng=np.random.default_rng((torch.initial_seed() + index) % (2 ** 32)),
+                rng=rng,
                 dedupe_distance_px=self.endpoint_dedupe_distance_px,
                 max_targets=self.max_targets,
             )
