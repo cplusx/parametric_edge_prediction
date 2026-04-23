@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from edge_datasets import build_datamodule
 from misc_utils.config_utils import load_config
+from misc_utils.train_utils import sample_bezier_curves_torch
 from misc_utils.debug_vis_endpoint_attach import render_endpoint_attach_frame, save_frames_as_gif
 from models.curve_coordinates import curve_external_to_internal, curve_internal_to_external
 from models.endpoint_matcher import HungarianPointMatcher
@@ -79,7 +80,10 @@ def _loop_focus_init(target: dict, pred_points_int: torch.Tensor, config: Dict) 
         return point_idx
     curve_idx = int(indices[start].item())
     curve = target["curves"][curve_idx]
-    pred_points_int[point_idx] = curve_external_to_internal(curve[curve.shape[0] // 2], config)
+    samples = sample_bezier_curves_torch(curve.unsqueeze(0), num_samples=64)[0]
+    gt_point = target["points"][point_idx]
+    farthest_idx = int(torch.norm(samples - gt_point[None, :], dim=1).argmax().item())
+    pred_points_int[point_idx] = curve_external_to_internal(samples[farthest_idx], config)
     return point_idx
 
 
