@@ -392,6 +392,77 @@ def _dedupe_point_cloud(points: List[np.ndarray], dedupe_distance_px: float) -> 
     return np.stack(kept_points, axis=0).astype(np.float32, copy=False)
 
 
+def _curve_endpoint_points_px(curves: np.ndarray, width: int, height: int) -> np.ndarray:
+    curves = np.asarray(curves, dtype=np.float32)
+    if curves.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if curves.ndim != 3 or curves.shape[-1] != 2:
+        raise ValueError(f'curves must have shape [N, P, 2], got {curves.shape}')
+    scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
+    endpoints = np.concatenate([curves[:, 0, :], curves[:, -1, :]], axis=0)
+    return (endpoints * scale[None, :]).astype(np.float32, copy=False)
+
+
+def _scale_points(points: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    if points.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    scale = np.asarray([scale_x, scale_y], dtype=np.float32)
+    return (points * scale[None, :]).astype(np.float32)
+
+
+def _apply_horizontal_flip_to_points(points: np.ndarray, width: int) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32).copy()
+    if points.size == 0:
+        return points.reshape(0, 2)
+    points[:, 0] = (width - 1) - points[:, 0]
+    return points
+
+
+def _apply_vertical_flip_to_points(points: np.ndarray, height: int) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32).copy()
+    if points.size == 0:
+        return points.reshape(0, 2)
+    points[:, 1] = (height - 1) - points[:, 1]
+    return points
+
+
+def _apply_affine_to_points(points: np.ndarray, matrix_xy: np.ndarray) -> np.ndarray:
+    points = np.asarray(points, dtype=np.float32)
+    if points.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    linear = matrix_xy[:2, :2]
+    offset = matrix_xy[:2, 2]
+    return ((points @ linear.T) + offset).astype(np.float32)
+
+
+def _build_endpoint_targets_from_points(
+    points_px: np.ndarray,
+    width: int,
+    height: int,
+    dedupe_distance_px: float,
+) -> Dict[str, np.ndarray]:
+    points_px = np.asarray(points_px, dtype=np.float32).reshape(-1, 2)
+    if points_px.size:
+        inside = (
+            (points_px[:, 0] >= 0.0)
+            & (points_px[:, 0] <= float(max(width - 1, 0)))
+            & (points_px[:, 1] >= 0.0)
+            & (points_px[:, 1] <= float(max(height - 1, 0)))
+        )
+        points_px = points_px[inside]
+    if points_px.size == 0:
+        point_array = np.zeros((0, 2), dtype=np.float32)
+    else:
+        deduped = _dedupe_point_cloud([point for point in points_px], dedupe_distance_px=dedupe_distance_px)
+        scale = np.asarray([max(width - 1, 1), max(height - 1, 1)], dtype=np.float32)
+        point_array = np.clip(deduped / scale[None, :], 0.0, 1.0).astype(np.float32)
+    return {
+        'points': point_array,
+        'image_size': np.asarray([height, width], dtype=np.int64),
+    }
+
+
 def build_endpoint_targets_from_crop_union(
     curves: np.ndarray,
     crop_left: int,
@@ -884,10 +955,7 @@ def prepare_training_endpoint_sample_with_mask(
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     output_size = _size_tuple(image_size)
     src_h, src_w = image.shape[:2]
-    curves_px = np.asarray(
-        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
-        dtype=np.float32,
-    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+    points_px = _curve_endpoint_points_px(curves, src_w, src_h)
 
     resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
     resize_scale = float(rng.uniform(resize_min, resize_max))
@@ -897,16 +965,16 @@ def prepare_training_endpoint_sample_with_mask(
     image, _ = resize_with_aspect_ratio(image, [], output_size=output_size, scale_multiplier=safe_resize_multiplier)
     resized_h, resized_w = image.shape[:2]
     mask = _resize_mask(mask if mask.ndim == 3 else mask[..., None], resized_h, resized_w)
-    curves_px = _scale_curves(curves_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
+    points_px = _scale_points(points_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
 
     if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
         image = image[:, ::-1].copy()
         mask = mask[:, ::-1].copy()
-        curves_px = apply_horizontal_flip_to_curves(curves_px, image.shape[1])
+        points_px = _apply_horizontal_flip_to_points(points_px, image.shape[1])
     if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
         image = image[::-1].copy()
         mask = mask[::-1].copy()
-        curves_px = apply_vertical_flip_to_curves(curves_px, image.shape[0])
+        points_px = _apply_vertical_flip_to_points(points_px, image.shape[0])
 
     max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
     angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
@@ -916,36 +984,22 @@ def prepare_training_endpoint_sample_with_mask(
     matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
     image = apply_affine_to_image(image, matrix_xy)
     mask = apply_affine_to_mask(mask, matrix_xy)
-    curves_px = apply_affine_to_curves(curves_px, matrix_xy)
+    points_px = _apply_affine_to_points(points_px, matrix_xy)
 
     image, mask = _pad_image_mask_and_polylines_for_crop(image, mask if mask.ndim == 3 else mask[..., None], [], crop_h=output_size[0], crop_w=output_size[1])[:2]
     pad_h = image.shape[0] - resized_h
     pad_w = image.shape[1] - resized_w
-    if curves_px.size:
-        curves_px = curves_px + np.asarray([pad_w // 2, pad_h // 2], dtype=np.float32)[None, None, :]
+    if points_px.size:
+        points_px = points_px + np.asarray([pad_w // 2, pad_h // 2], dtype=np.float32)[None, :]
     image, mask, (crop_left, crop_top) = random_crop_image_and_mask(image, mask, crop_size=output_size, rng=rng)
-    cropped_curves_px = curves_px
-    if cropped_curves_px.size:
-        cropped_curves_px = cropped_curves_px - np.asarray([crop_left, crop_top], dtype=np.float32)[None, None, :]
-        cropped_curves_px = clip_and_refit_curves_to_rect(
-            cropped_curves_px,
-            width=output_size[1],
-            height=output_size[0],
-        )
-    targets = build_endpoint_targets_from_crop_union(
-        cropped_curves_px,
-        crop_left=0,
-        crop_top=0,
-        crop_width=output_size[1],
-        crop_height=output_size[0],
+    if points_px.size:
+        points_px = points_px - np.asarray([crop_left, crop_top], dtype=np.float32)[None, :]
+    targets = _build_endpoint_targets_from_points(
+        points_px,
+        width=output_size[1],
+        height=output_size[0],
         dedupe_distance_px=dedupe_distance_px,
     )
-    curve_targets = build_targets_from_curves(
-        cropped_curves_px,
-        image_shape=image.shape[:2],
-        max_targets=max_targets,
-    )
-    targets['curves'] = curve_targets['curves']
     return image, (mask > 0.5).astype(np.float32), targets
 
 
@@ -960,10 +1014,7 @@ def prepare_training_endpoint_sample(
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     output_size = _size_tuple(image_size)
     src_h, src_w = image.shape[:2]
-    curves_px = np.asarray(
-        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
-        dtype=np.float32,
-    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+    points_px = _curve_endpoint_points_px(curves, src_w, src_h)
 
     resize_min, resize_max = augment_cfg.get('resize_scale_range', [1.0, 1.25])
     resize_scale = float(rng.uniform(resize_min, resize_max))
@@ -972,14 +1023,14 @@ def prepare_training_endpoint_sample(
     safe_resize_multiplier = resize_scale / max(affine_scale, 1e-6)
     image, _ = resize_with_aspect_ratio(image, [], output_size=output_size, scale_multiplier=safe_resize_multiplier)
     resized_h, resized_w = image.shape[:2]
-    curves_px = _scale_curves(curves_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
+    points_px = _scale_points(points_px, resized_w / max(src_w, 1), resized_h / max(src_h, 1))
 
     if float(augment_cfg.get('hflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('hflip_prob', 0.0)):
         image = image[:, ::-1].copy()
-        curves_px = apply_horizontal_flip_to_curves(curves_px, image.shape[1])
+        points_px = _apply_horizontal_flip_to_points(points_px, image.shape[1])
     if float(augment_cfg.get('vflip_prob', 0.0)) > 0.0 and rng.random() < float(augment_cfg.get('vflip_prob', 0.0)):
         image = image[::-1].copy()
-        curves_px = apply_vertical_flip_to_curves(curves_px, image.shape[0])
+        points_px = _apply_vertical_flip_to_points(points_px, image.shape[0])
 
     max_angle = float(augment_cfg.get('affine_max_rotate_deg', 0.0))
     angle = float(rng.uniform(-max_angle, max_angle)) if max_angle > 0.0 else 0.0
@@ -988,7 +1039,7 @@ def prepare_training_endpoint_sample(
     translate_y = float(rng.uniform(-translate_ratio, translate_ratio) * image.shape[0])
     matrix_xy = build_centered_affine_matrix(image.shape[1], image.shape[0], angle_deg=angle, scale=affine_scale, translate_xy=(translate_x, translate_y))
     image = apply_affine_to_image(image, matrix_xy)
-    curves_px = apply_affine_to_curves(curves_px, matrix_xy)
+    points_px = _apply_affine_to_points(points_px, matrix_xy)
 
     crop_h, crop_w = output_size
     height, width = image.shape[:2]
@@ -1000,36 +1051,22 @@ def prepare_training_endpoint_sample(
         pad_left = pad_w // 2
         pad_right = pad_w - pad_left
         image = np.pad(image, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode='reflect')
-        if curves_px.size:
-            curves_px = curves_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, None, :]
+        if points_px.size:
+            points_px = points_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, :]
         height, width = image.shape[:2]
     max_top = height - crop_h
     max_left = width - crop_w
     crop_top = int(rng.integers(0, max_top + 1)) if max_top > 0 else 0
     crop_left = int(rng.integers(0, max_left + 1)) if max_left > 0 else 0
     image = image[crop_top:crop_top + crop_h, crop_left:crop_left + crop_w].copy()
-    cropped_curves_px = curves_px
-    if cropped_curves_px.size:
-        cropped_curves_px = cropped_curves_px - np.asarray([crop_left, crop_top], dtype=np.float32)[None, None, :]
-        cropped_curves_px = clip_and_refit_curves_to_rect(
-            cropped_curves_px,
-            width=output_size[1],
-            height=output_size[0],
-        )
-    targets = build_endpoint_targets_from_crop_union(
-        cropped_curves_px,
-        crop_left=0,
-        crop_top=0,
-        crop_width=output_size[1],
-        crop_height=output_size[0],
+    if points_px.size:
+        points_px = points_px - np.asarray([crop_left, crop_top], dtype=np.float32)[None, :]
+    targets = _build_endpoint_targets_from_points(
+        points_px,
+        width=output_size[1],
+        height=output_size[0],
         dedupe_distance_px=dedupe_distance_px,
     )
-    curve_targets = build_targets_from_curves(
-        cropped_curves_px,
-        image_shape=image.shape[:2],
-        max_targets=max_targets,
-    )
-    targets['curves'] = curve_targets['curves']
     return image, targets
 
 
@@ -1164,10 +1201,7 @@ def prepare_eval_endpoint_sample_with_mask(
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     output_size = _size_tuple(image_size)
     src_h, src_w = image.shape[:2]
-    curves_px = np.asarray(
-        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
-        dtype=np.float32,
-    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+    points_px = _curve_endpoint_points_px(curves, src_w, src_h)
 
     image, mask, _ = letterbox_image_mask_and_polylines(image, mask, [], output_size=output_size)
     scale = min(output_size[0] / max(src_h, 1), output_size[1] / max(src_w, 1))
@@ -1175,28 +1209,15 @@ def prepare_eval_endpoint_sample_with_mask(
     new_w = max(1, int(round(src_w * scale)))
     pad_top = (output_size[0] - new_h) // 2
     pad_left = (output_size[1] - new_w) // 2
-    curves_px = _scale_curves(curves_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
-    if curves_px.size:
-        curves_px = curves_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, None, :]
-        curves_px = clip_and_refit_curves_to_rect(
-            curves_px,
-            width=output_size[1],
-            height=output_size[0],
-        )
-    targets = build_endpoint_targets_from_crop_union(
-        curves_px,
-        crop_left=0,
-        crop_top=0,
-        crop_width=output_size[1],
-        crop_height=output_size[0],
+    points_px = _scale_points(points_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
+    if points_px.size:
+        points_px = points_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, :]
+    targets = _build_endpoint_targets_from_points(
+        points_px,
+        width=output_size[1],
+        height=output_size[0],
         dedupe_distance_px=dedupe_distance_px,
     )
-    curve_targets = build_targets_from_curves(
-        curves_px,
-        image_shape=image.shape[:2],
-        max_targets=max_targets,
-    )
-    targets['curves'] = curve_targets['curves']
     return image, (mask > 0.5).astype(np.float32), targets
 
 
@@ -1209,10 +1230,7 @@ def prepare_eval_endpoint_sample(
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     output_size = _size_tuple(image_size)
     src_h, src_w = image.shape[:2]
-    curves_px = np.asarray(
-        [denormalize_control_points(control_points, src_w, src_h) for control_points in np.asarray(curves, dtype=np.float32)],
-        dtype=np.float32,
-    ) if np.asarray(curves).size else np.zeros((0, 0, 2), dtype=np.float32)
+    points_px = _curve_endpoint_points_px(curves, src_w, src_h)
 
     image, _ = letterbox_image_and_polylines(image, [], output_size=output_size)
     scale = min(output_size[0] / max(src_h, 1), output_size[1] / max(src_w, 1))
@@ -1220,23 +1238,15 @@ def prepare_eval_endpoint_sample(
     new_w = max(1, int(round(src_w * scale)))
     pad_top = (output_size[0] - new_h) // 2
     pad_left = (output_size[1] - new_w) // 2
-    curves_px = _scale_curves(curves_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
-    if curves_px.size:
-        curves_px = curves_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, None, :]
-    targets = build_endpoint_targets_from_crop_union(
-        curves_px,
-        crop_left=0,
-        crop_top=0,
-        crop_width=output_size[1],
-        crop_height=output_size[0],
+    points_px = _scale_points(points_px, new_w / max(src_w, 1), new_h / max(src_h, 1))
+    if points_px.size:
+        points_px = points_px + np.asarray([pad_left, pad_top], dtype=np.float32)[None, :]
+    targets = _build_endpoint_targets_from_points(
+        points_px,
+        width=output_size[1],
+        height=output_size[0],
         dedupe_distance_px=dedupe_distance_px,
     )
-    curve_targets = build_targets_from_curves(
-        curves_px,
-        image_shape=image.shape[:2],
-        max_targets=max_targets,
-    )
-    targets['curves'] = curve_targets['curves']
     return image, targets
 
 

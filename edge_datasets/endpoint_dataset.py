@@ -28,7 +28,7 @@ def _endpoint_target_from_curve_target(
     dataset_name: str,
 ) -> Dict:
     image_chw = np.transpose(target_data['image_hwc'], (2, 0, 1))
-    curves = np.asarray(target_data['curves'], dtype=np.float32)
+    curves = np.asarray(target_data.get('curves', np.zeros((0, 2, 2), dtype=np.float32)), dtype=np.float32)
     if 'points' in target_data:
         points = np.asarray(target_data['points'], dtype=np.float32)
     else:
