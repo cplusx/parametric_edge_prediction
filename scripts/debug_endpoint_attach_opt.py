@@ -151,7 +151,7 @@ def main() -> None:
     parser.add_argument("--iterations", type=int, default=120)
     parser.add_argument("--lr", type=float, default=0.04)
     parser.add_argument("--frame-every", type=int, default=4)
-    parser.add_argument("--gif-fps", type=float, default=0.3)
+    parser.add_argument("--gif-fps", type=float, default=3.0)
     parser.add_argument("--loop-focus", action="store_true")
     args = parser.parse_args()
 

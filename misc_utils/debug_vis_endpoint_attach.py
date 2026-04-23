@@ -1,12 +1,12 @@
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-import imageio.v2 as imageio
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 
 from misc_utils.bezier_target_utils import sample_bezier_numpy
 
@@ -98,8 +98,17 @@ def render_endpoint_attach_frame(
     return frame
 
 
-def save_frames_as_gif(frames: List[np.ndarray], path: Path, *, fps: float = 0.3) -> None:
+def save_frames_as_gif(frames: List[np.ndarray], path: Path, *, fps: float = 3.0) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    duration = 1.0 / max(float(fps), 1e-6)
-    imageio.mimsave(path, frames, duration=duration)
+    duration_ms = max(20, int(round(1000.0 / max(float(fps), 1e-6))))
+    pil_frames = [Image.fromarray(np.asarray(frame, dtype=np.uint8)) for frame in frames]
+    if not pil_frames:
+        raise ValueError(f'No frames to save for {path}')
+    pil_frames[0].save(
+        path,
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
