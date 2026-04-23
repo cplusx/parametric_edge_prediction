@@ -29,4 +29,4 @@ python scripts/rewrite_bezier_entry_cache.py \
   --image-root "${DATA_ROOT}" \
   --bezier-root "${DATA_ROOT}/laion_edge_v3_bezier"
 
-python train.py --config "${CONFIG_PATH}"
+python train.py --config "${CONFIG_PATH}" "$@"

@@ -121,7 +121,6 @@ trainer:
   devices: 4
   strategy: ddp_find_unused_parameters_true
   precision: 32-true
-  auto_resume_from_last: true
   accumulate_grad_batches: 1
   log_every_n_steps: 10
   gradient_clip_val: 0.1

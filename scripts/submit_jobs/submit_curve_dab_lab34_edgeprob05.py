@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -10,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.remote_hosts import run_lab34
+from scripts.remote_hosts import run_lab34  # noqa: E402
 
 
 LAB34_REPO = "/data/jiaxin/parametric_edge_prediction"
@@ -20,7 +19,8 @@ LAUNCHER_PATH = f"{LAB34_REPO}/outputs/launch_curve_dab_lab34_edgeprob05.sh"
 LAUNCH_LOG = f"{LAB34_REPO}/outputs/launch_curve_dab_lab34_edgeprob05.log"
 
 
-def build_launcher() -> str:
+def build_launcher(*, resume: bool = False) -> str:
+    resume_arg = " --resume" if resume else ""
     return dedent(
         f"""\
         #!/usr/bin/env bash
@@ -37,7 +37,7 @@ def build_launcher() -> str:
           --output-cache {LAB34_DATA_ROOT}/laion_entry_cache_v3_bezier.txt \\
           --image-root {LAB34_DATA_ROOT} \\
           --bezier-root {LAB34_DATA_ROOT}/laion_edge_v3_bezier
-        python train.py --config {CONFIG_PATH}
+        python train.py --config {CONFIG_PATH}{resume_arg}
         """
     )
 
@@ -63,9 +63,10 @@ def submit(launcher_text: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Print or launch the lab34 edge-prob-matching curve DAB run.")
     parser.add_argument("--submit", action="store_true", help="actually launch on lab34 after printing")
+    parser.add_argument("-r", "--resume", action="store_true", help="resume from default_root_dir/checkpoints/last.ckpt if available")
     args = parser.parse_args()
 
-    launcher_text = build_launcher()
+    launcher_text = build_launcher(resume=args.resume)
     print("===== LAUNCHER BEGIN =====")
     print(launcher_text, end="" if launcher_text.endswith("\n") else "\n")
     print("===== LAUNCHER END =====")

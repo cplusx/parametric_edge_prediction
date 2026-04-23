@@ -148,12 +148,17 @@ def resolve_runtime_scaling(config: Dict[str, Any]) -> Dict[str, Any]:
     return _format_runtime_values(config, context)
 
 
-def resolve_resume_checkpoint(config: Dict[str, Any], explicit_resume_from: Optional[str]) -> Optional[str]:
+def resolve_resume_checkpoint(
+    config: Dict[str, Any],
+    *,
+    resume: bool,
+    explicit_resume_from: Optional[str],
+) -> Optional[str]:
     if explicit_resume_from:
         return explicit_resume_from
-    trainer_cfg = config.get('trainer', {})
-    if not bool(trainer_cfg.get('auto_resume_from_last', False)):
+    if not resume:
         return None
+    trainer_cfg = config.get('trainer', {})
     root_dir = Path(trainer_cfg['default_root_dir'])
     last_ckpt = root_dir / 'checkpoints' / 'last.ckpt'
     return str(last_ckpt) if last_ckpt.is_file() else None
@@ -163,6 +168,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Train a DETR-style parametric edge detector.')
     parser.add_argument('--config', default='configs/parametric_edge/default.yaml')
     parser.add_argument('--override-config', default=None)
+    parser.add_argument('-r', '--resume', action='store_true', help='resume from default_root_dir/checkpoints/last.ckpt if it exists')
     parser.add_argument('--resume-from', default=None)
     args = parser.parse_args()
 
@@ -182,9 +188,11 @@ def main() -> None:
     torch.set_float32_matmul_precision('high')
     root_dir = Path(config['trainer']['default_root_dir'])
     root_dir.mkdir(parents=True, exist_ok=True)
-    resume_from = resolve_resume_checkpoint(config, args.resume_from)
+    resume_from = resolve_resume_checkpoint(config, resume=args.resume, explicit_resume_from=args.resume_from)
     if resume_from is not None:
         print(f"[train] resuming from {resume_from}")
+    elif args.resume:
+        print(f"[train] resume requested but no checkpoint found at {root_dir / 'checkpoints' / 'last.ckpt'}")
 
     datamodule = build_datamodule(config)
     model = ParametricEdgeLightningModule(config)
