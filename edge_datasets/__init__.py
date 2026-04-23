@@ -1,6 +1,11 @@
 def build_datamodule(config):
     arch = str(config.get('model', {}).get('arch', 'dab_curve_detr')).lower()
     if arch == 'dab_endpoint_detr':
+        endpoint_target_mode = str(config.get('data', {}).get('endpoint_target_mode', 'points')).lower()
+        if endpoint_target_mode == 'attach':
+            from edge_datasets.endpoint_attach_datamodule import EndpointAttachDataModule
+
+            return EndpointAttachDataModule(config)
         from edge_datasets.endpoint_datamodule import EndpointDetectionDataModule
 
         return EndpointDetectionDataModule(config)

@@ -1,5 +1,3 @@
-from typing import Tuple
-
 import torch
 
 from misc_utils.train_utils import sample_bezier_curves_torch
@@ -98,3 +96,58 @@ def pairwise_curve_chamfer_cost(
     pred_to_tgt = pairwise.min(dim=3).values.mean(dim=2)
     tgt_to_pred = pairwise.min(dim=2).values.mean(dim=2)
     return 0.5 * (pred_to_tgt + tgt_to_pred)
+
+
+def sample_curve_segments(curves: torch.Tensor, num_samples: int) -> torch.Tensor:
+    if curves.numel() == 0:
+        return curves.new_zeros((curves.shape[0] if curves.ndim > 0 else 0, 0, 2, 2))
+    num_samples = max(2, int(num_samples))
+    samples = sample_bezier_curves_torch(curves, num_samples=num_samples)
+    return torch.stack([samples[:, :-1, :], samples[:, 1:, :]], dim=2)
+
+
+def point_to_segments_distance(points: torch.Tensor, segments: torch.Tensor) -> torch.Tensor:
+    if points.numel() == 0:
+        return points.new_zeros((points.shape[0],) + tuple(segments.shape[:-2]))
+    if segments.numel() == 0:
+        return points.new_zeros((points.shape[0],) + tuple(segments.shape[:-2]))
+    starts = segments[..., 0, :]
+    ends = segments[..., 1, :]
+    segment_vec = ends - starts
+    point_vec = points.view(points.shape[0], *([1] * (starts.ndim - 1)), 2) - starts.unsqueeze(0)
+    denom = (segment_vec * segment_vec).sum(dim=-1).clamp_min(1e-12)
+    t = (point_vec * segment_vec.unsqueeze(0)).sum(dim=-1) / denom.unsqueeze(0)
+    projection = starts.unsqueeze(0) + t.clamp(0.0, 1.0).unsqueeze(-1) * segment_vec.unsqueeze(0)
+    return (points.view(points.shape[0], *([1] * (starts.ndim - 1)), 2) - projection).norm(dim=-1)
+
+
+def point_to_incident_curves_attach_distance(
+    pred_points: torch.Tensor,
+    target_curves: torch.Tensor,
+    point_curve_offsets: torch.Tensor,
+    point_curve_indices: torch.Tensor,
+    num_curve_samples: int,
+) -> torch.Tensor:
+    if pred_points.numel() == 0:
+        return pred_points.new_zeros((0,))
+    if target_curves.numel() == 0 or point_curve_offsets.numel() == 0:
+        return pred_points.new_zeros((pred_points.shape[0],))
+
+    segments = sample_curve_segments(target_curves, num_samples=num_curve_samples)
+    distances = []
+    curve_count = int(target_curves.shape[0])
+    for point_idx in range(pred_points.shape[0]):
+        start = int(point_curve_offsets[point_idx].item())
+        end = int(point_curve_offsets[point_idx + 1].item())
+        incident = point_curve_indices[start:end]
+        if incident.numel() == 0:
+            distances.append(pred_points[point_idx].sum() * 0.0)
+            continue
+        valid = incident[(incident >= 0) & (incident < curve_count)]
+        if valid.numel() == 0:
+            distances.append(pred_points[point_idx].sum() * 0.0)
+            continue
+        incident_segments = segments.index_select(0, valid.to(device=segments.device, dtype=torch.long))
+        point_dist = point_to_segments_distance(pred_points[point_idx: point_idx + 1], incident_segments)
+        distances.append(point_dist.reshape(-1).min())
+    return torch.stack(distances, dim=0)

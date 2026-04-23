@@ -13,6 +13,9 @@ data:
   min_curve_length: 3.0
   max_targets: 512
   train_augment: true
+  endpoint_target_mode: points
+  endpoint_dedupe_distance_px: 2.0
+  endpoint_closed_curve_threshold_px: 2.0
   augment:
     resize_scale_range: [1.0, 1.5]
     affine_scale_range: [0.9, 1.1]
@@ -100,6 +103,11 @@ loss:
   edge_prob_cost: 0.5
   no_object_weight: 0.2
   dynamic_class_balance: false
+  endpoint_loss_type: l1
+  point_attach_weight: 1.0
+  point_attach_low_degree_multiplier: 5.0
+  point_attach_degree_threshold: 3
+  point_attach_num_curve_samples: 8
 
 optimizer:
   lr: 0.00002

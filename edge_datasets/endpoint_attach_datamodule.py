@@ -1,0 +1,59 @@
+from pathlib import Path
+from typing import Dict, Sequence
+
+from edge_datasets.endpoint_attach_dataset import (
+    LaionSyntheticEndpointAttachDataset,
+    ParametricEndpointAttachDataset,
+    endpoint_attach_detection_collate,
+)
+from edge_datasets.laion_synthetic_dataset import discover_laion_bezier_samples
+from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
+
+
+class EndpointAttachDataModule(ParametricEdgeDataModule):
+    def _build_dataset(self, edge_paths: Sequence[Path], split: str, train_augment: bool, common: Dict) -> ParametricEndpointAttachDataset:
+        return ParametricEndpointAttachDataset(
+            curve_paths=edge_paths,
+            image_size=int(common['image_size']),
+            split=split,
+            train_augment=train_augment,
+            input_root=self._split_input_roots(split),
+            rgb_input=bool(common['rgb_input']),
+            target_degree=int(common['target_degree']),
+            max_targets=int(common['max_targets']),
+            augment_cfg=dict(common['augment_cfg']),
+            endpoint_dedupe_distance_px=float(self.config['data'].get('endpoint_dedupe_distance_px', 2.0)),
+            endpoint_closed_curve_threshold_px=float(self.config['data'].get('endpoint_closed_curve_threshold_px', 2.0)),
+        )
+
+    def _build_laion_dataset(self, dataset_cfg: Dict, split: str, train_augment: bool, common: Dict):
+        sample_records = discover_laion_bezier_samples(
+            data_root=Path(dataset_cfg['data_root']),
+            image_root=Path(dataset_cfg['image_root']) if dataset_cfg.get('image_root') is not None else None,
+            bezier_root=Path(dataset_cfg.get('bezier_root', dataset_cfg.get('edge_root'))) if dataset_cfg.get('bezier_root', dataset_cfg.get('edge_root')) is not None else None,
+            entry_cache_path=Path(dataset_cfg['entry_cache_path']) if dataset_cfg.get('entry_cache_path') is not None else None,
+            batches=dataset_cfg.get('batches'),
+            batch_glob=str(dataset_cfg.get('batch_glob', 'batch*')),
+            max_samples=dataset_cfg.get('max_samples'),
+            selection_seed=dataset_cfg.get('selection_seed'),
+            selection_offset=int(dataset_cfg.get('selection_offset', 0)),
+        )
+        if not sample_records:
+            raise FileNotFoundError(f'No LAION synthetic samples found for config: {dataset_cfg}')
+        return LaionSyntheticEndpointAttachDataset(
+            sample_records=sample_records,
+            image_size=int(common['image_size']),
+            target_degree=int(common['target_degree']),
+            max_targets=int(common['max_targets']),
+            split=split,
+            train_augment=train_augment,
+            augment_cfg=dict(common['augment_cfg']),
+            rgb_input=bool(common['rgb_input']),
+            endpoint_dedupe_distance_px=float(self.config['data'].get('endpoint_dedupe_distance_px', 2.0)),
+            endpoint_closed_curve_threshold_px=float(self.config['data'].get('endpoint_closed_curve_threshold_px', 2.0)),
+        )
+
+    def _loader_kwargs(self) -> Dict:
+        loader_kwargs = super()._loader_kwargs()
+        loader_kwargs['collate_fn'] = endpoint_attach_detection_collate
+        return loader_kwargs
