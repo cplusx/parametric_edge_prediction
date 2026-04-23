@@ -87,6 +87,30 @@ def _loop_focus_init(target: dict, pred_points_int: torch.Tensor, config: Dict) 
     return point_idx
 
 
+def _focus_indices(point_count: int, focus_idx: Optional[int]) -> torch.Tensor:
+    if focus_idx is None:
+        return torch.arange(point_count, dtype=torch.long)
+    return torch.as_tensor([int(focus_idx)], dtype=torch.long)
+
+
+def _single_endpoint_target(target: dict, point_idx: Optional[int]) -> dict:
+    if point_idx is None:
+        return target
+    idx = int(point_idx)
+    offsets = target["point_curve_offsets"]
+    curve_indices = target["point_curve_indices"]
+    start = int(offsets[idx].item())
+    end = int(offsets[idx + 1].item())
+    out = dict(target)
+    out["points"] = target["points"][idx:idx + 1]
+    out["labels"] = target["labels"][idx:idx + 1] if "labels" in target else target["points"].new_zeros((1,), dtype=torch.long)
+    out["point_degree"] = target["point_degree"][idx:idx + 1]
+    out["point_is_loop_only"] = target["point_is_loop_only"][idx:idx + 1]
+    out["point_curve_offsets"] = torch.as_tensor([0, max(0, end - start)], dtype=torch.long, device=offsets.device)
+    out["point_curve_indices"] = curve_indices[start:end]
+    return out
+
+
 def _optimize(
     *,
     target: dict,
@@ -116,14 +140,22 @@ def _optimize(
     loss_fn = MatchedPointLoss(run_config)
     optimizer = torch.optim.Adam([pred_points], lr=float(lr))
     frames = []
+    focus_query_indices = _focus_indices(pred_points.shape[0], highlight_idx if loop_focus else None).to(device)
+    loss_target = _single_endpoint_target(target, highlight_idx if loop_focus else None)
     for step in range(int(iterations) + 1):
         optimizer.zero_grad(set_to_none=True)
-        outputs = {"pred_points": pred_points.unsqueeze(0), "pred_logits": logits}
-        indices = matcher(logits=outputs["pred_logits"], points=outputs["pred_points"], targets=[target])
-        losses = loss_fn(outputs["pred_points"], outputs["pred_logits"], [target], indices, outputs)
+        active_pred_points = pred_points.index_select(0, focus_query_indices)
+        active_logits = logits.index_select(1, focus_query_indices)
+        outputs = {"pred_points": active_pred_points.unsqueeze(0), "pred_logits": active_logits}
+        indices = matcher(logits=outputs["pred_logits"], points=outputs["pred_points"], targets=[loss_target])
+        losses = loss_fn(outputs["pred_points"], outputs["pred_logits"], [loss_target], indices, outputs)
         if step % int(frame_every) == 0 or step == int(iterations):
             pred_external = curve_internal_to_external(pred_points.detach(), run_config).clamp(0.0, 1.0).cpu().numpy()
-            matched = (indices[0][0].detach().cpu().numpy(), indices[0][1].detach().cpu().numpy())
+            matched_src = focus_query_indices[indices[0][0]].detach().cpu().numpy()
+            matched_tgt = indices[0][1].detach().cpu().numpy()
+            if loop_focus and highlight_idx is not None:
+                matched_tgt = matched_tgt * 0 + int(highlight_idx)
+            matched = (matched_src, matched_tgt)
             title = (
                 f"{'attach' if use_attach else 'l1-only'} iter={step} "
                 f"loss={float(losses['loss_total'].detach()):.4f} "
