@@ -56,7 +56,7 @@ def build_sbatch() -> str:
             raise FileNotFoundError(f'cache bezier missing: {{bezier_path}}')
         print(f'cache preflight ok: {{batch}}/{{image_id}}')
         PY
-        python train.py --config {CONFIG_PATH}
+        python train.py --config {CONFIG_PATH} --resume
         """
     )
 

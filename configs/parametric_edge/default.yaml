@@ -126,7 +126,7 @@ optimizer:
 
 trainer:
   default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-r50-4gpu-q300-eb64-lr2e5-fp32
-  max_epochs: 200
+  max_epochs: 1000
   accelerator: gpu
   devices: 4
   strategy: ddp_find_unused_parameters_true
