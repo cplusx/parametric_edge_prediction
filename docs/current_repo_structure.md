@@ -31,6 +31,8 @@ This is the current layout of the active codebase.
 
 - `models/dab_curve_detr.py`
   - curve prediction model
+- `models/dab_cond_curve_detr.py`
+  - endpoint-conditioned curve prediction model
 - `models/dab_endpoint_detr.py`
   - endpoint prediction model
 - `models/curve_query_initializers.py`
@@ -44,6 +46,7 @@ Model factory:
 Supported `model.arch` values:
 
 - `dab_curve_detr`
+- `dab_cond_curve_detr`
 - `dab_endpoint_detr`
 
 ## Current Dataset Entry Points
@@ -57,6 +60,9 @@ Current branches:
 - curve branch
   - `edge_datasets/parametric_edge_dataset.py`
   - `edge_datasets/parametric_edge_datamodule.py`
+- conditioned-curve branch
+  - `edge_datasets/conditioned_curve_dataset.py`
+  - `edge_datasets/conditioned_curve_datamodule.py`
 - endpoint point-only branch
   - `edge_datasets/endpoint_dataset.py`
   - `edge_datasets/endpoint_datamodule.py`
@@ -77,6 +83,9 @@ Loss selection lives in:
 Current branches:
 
 - curve branch
+  - matcher: `models/matcher.py`
+  - losses: `models/losses/composite.py`, `models/losses/matched.py`, `models/losses/regularizers.py`
+- conditioned-curve branch
   - matcher: `models/matcher.py`
   - losses: `models/losses/composite.py`, `models/losses/matched.py`, `models/losses/regularizers.py`
 - endpoint branch
@@ -121,6 +130,8 @@ Training submit helpers:
 
 Dataset / geometry debug helpers:
 
+- `scripts/forward_conditioned_curve_once.py`
+- `scripts/render_conditioned_curve_dataset_samples.py`
 - `scripts/render_v3_endpoint_dataset_samples.py`
 - `scripts/render_compact_bezier_preview.py`
 - `scripts/profile_v3_dataloader_setup.py`
@@ -143,6 +154,8 @@ Maintained configs under `configs/parametric_edge/`:
 - curve DAB, lab machines
   - `laion_curve_pretrain_lab30_v3_2gpu.yaml`
   - `laion_curve_pretrain_lab34_v3_edgeprob05.yaml`
+- conditioned curve DAB, lab34
+  - `laion_conditioned_curve_pretrain_lab34_v3_2gpu.yaml`
 - endpoint DAB, point-only
   - `laion_endpoint_pretrain_lab34_v3_2gpu.yaml`
 - endpoint DAB, attach branch
@@ -152,6 +165,12 @@ Maintained configs under `configs/parametric_edge/`:
 Shared defaults:
 
 - `configs/parametric_edge/default.yaml`
+
+Current lab34 launchers:
+
+- `run_lab34.sh`
+- `run_lab34_endpt.sh`
+- `run_lab34_conditioned_curve.sh`
 
 ## What Is Not Current
 

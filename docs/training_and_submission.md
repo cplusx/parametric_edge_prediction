@@ -72,6 +72,25 @@ Lab machines:
 - `configs/parametric_edge/laion_curve_pretrain_lab30_v3_2gpu.yaml`
 - `configs/parametric_edge/laion_curve_pretrain_lab34_v3_edgeprob05.yaml`
 
+### Conditioned Curve DAB
+
+Lab34:
+
+- `configs/parametric_edge/laion_conditioned_curve_pretrain_lab34_v3_2gpu.yaml`
+
+This branch uses:
+
+- `model.arch: dab_cond_curve_detr`
+- curve targets, like direct curve DAB
+- merged endpoint condition points from the conditioned dataloader
+- default init from a direct curve DAB checkpoint when
+  - `model.conditioned_curve_init_enabled: true`
+  - `model.conditioned_curve_init_checkpoint` is set
+
+The endpoint-conditioning residual path is zero-initialized, so loading the
+base curve DAB checkpoint starts from the same behavior as the direct curve
+model before conditioning learns to contribute.
+
 ### Endpoint DAB
 
 Point-only branch:
@@ -99,6 +118,10 @@ Supported values:
 Implementation:
 
 - `models/curve_query_initializers.py`
+
+Conditioned curve init loader:
+
+- `misc_utils/checkpoint_loading.py`
 
 ## Current Curve Matching / Loss Options
 
@@ -156,6 +179,12 @@ Current submit-script rules:
 - cluster scripts go through `lab30 -> cluster`
 - lab34 launcher writes a shell script on `lab34` and starts it with `nohup`
 - training jobs should use `--resume` when the run directory is intended to continue from `last.ckpt`
+
+Current direct lab34 launch scripts in repo root:
+
+- `run_lab34.sh`
+- `run_lab34_endpt.sh`
+- `run_lab34_conditioned_curve.sh`
 
 ## Sync Rules Before Submission
 

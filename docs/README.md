@@ -15,7 +15,7 @@ This directory only keeps the current, maintained documentation for the active c
   - current runtime defaults
 - [curve_vs_endpoint_dab.md](./curve_vs_endpoint_dab.md)
   - current difference between curve DAB and endpoint DAB
-  - includes the attach branch
+  - includes the attach branch and conditioned-curve branch
 - [lab_cluster_practical_manual.md](./lab_cluster_practical_manual.md)
   - machine roots
   - env mapping
@@ -33,6 +33,13 @@ images
   -> dataloader
   -> DAB training
 ```
+
+## Current Training Branches
+
+- direct curve DAB
+- endpoint DAB
+- endpoint-attach DAB
+- endpoint-conditioned curve DAB
 
 ## Scope Rule
 

@@ -1,6 +1,6 @@
 # Curve DAB vs Endpoint DAB
 
-This document compares the current maintained versions of the two DAB branches.
+This document compares the current maintained curve-style and endpoint-style DAB branches.
 
 ## Shared Pieces
 
@@ -53,6 +53,45 @@ Special current detail:
 
 - `model.curve_query_init_type` must be set explicitly
 - supported initializers live in `models/curve_query_initializers.py`
+
+## Conditioned Curve DAB
+
+Model:
+
+- `models/dab_cond_curve_detr.py`
+
+Targets:
+
+- `targets[i]['curves']`
+
+Extra model inputs:
+
+- `model_inputs['condition_points']`
+- `model_inputs['condition_padding_mask']`
+
+Dataset path:
+
+- `edge_datasets/conditioned_curve_dataset.py`
+- `edge_datasets/conditioned_curve_datamodule.py`
+
+Matcher:
+
+- `models/matcher.py`
+
+Loss path:
+
+- `models/losses/composite.py`
+- `models/losses/matched.py`
+- `models/losses/regularizers.py`
+
+Current special details:
+
+- query / geometry supervision stays the same as direct curve DAB
+- every decoder layer adds endpoint-token cross-attention after image-memory cross-attention
+- endpoint-token residual output is zero-initialized
+- direct curve DAB checkpoints can be used as initialization through
+  - `model.conditioned_curve_init_enabled`
+  - `model.conditioned_curve_init_checkpoint`
 
 ## Endpoint DAB
 
@@ -124,6 +163,12 @@ Curve DAB:
 - each query predicts a full curve
 - output geometry is all control points
 
+Conditioned Curve DAB:
+
+- each query still predicts a full curve
+- output geometry is all control points
+- decoder also sees merged endpoint condition tokens
+
 Endpoint DAB:
 
 - each query predicts a single 2D endpoint
@@ -134,6 +179,11 @@ Endpoint DAB:
 Curve DAB:
 
 - Hungarian matching over curve geometry cost plus edge-probability cost
+
+Conditioned Curve DAB:
+
+- same Hungarian matching as direct curve DAB
+- current conditioning does not change matcher semantics
 
 Endpoint DAB:
 
@@ -147,6 +197,11 @@ Curve DAB:
 - geometry loss is on curves
 - current options are chamfer or EMD
 
+Conditioned Curve DAB:
+
+- same curve-side geometry loss path as direct curve DAB
+- conditioning currently changes the decoder, not the loss definition
+
 Endpoint DAB:
 
 - base branch uses endpoint point loss
@@ -158,6 +213,12 @@ Endpoint DAB:
 Curve DAB:
 
 - loader returns image + curve targets
+
+Conditioned Curve DAB:
+
+- loader returns image + curve targets
+- also returns merged endpoint condition points after augment/crop
+- batch pads condition points to current batch max and masks the padding
 
 Endpoint DAB:
 

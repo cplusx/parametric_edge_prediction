@@ -9,6 +9,10 @@ def build_datamodule(config):
         from edge_datasets.endpoint_datamodule import EndpointDetectionDataModule
 
         return EndpointDetectionDataModule(config)
+    if arch == 'dab_cond_curve_detr':
+        from edge_datasets.conditioned_curve_datamodule import ConditionedCurveDataModule
+
+        return ConditionedCurveDataModule(config)
     if arch == 'dab_curve_detr':
         from edge_datasets.parametric_edge_datamodule import ParametricEdgeDataModule
 

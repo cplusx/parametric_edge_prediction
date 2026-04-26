@@ -18,10 +18,10 @@ class ParametricEdgeLightningModule(pl.LightningModule):
             self.model = self.model.to(memory_format=torch.channels_last)
         self.save_hyperparameters(config)
 
-    def forward(self, images: torch.Tensor, targets=None):
+    def forward(self, images: torch.Tensor, targets=None, **model_inputs):
         if self.use_channels_last:
             images = images.contiguous(memory_format=torch.channels_last)
-        return self.model(images, targets=targets)
+        return self.model(images, targets=targets, **model_inputs)
 
     def on_train_epoch_start(self) -> None:
         self.model.set_epoch(self.current_epoch)
@@ -47,7 +47,8 @@ class ParametricEdgeLightningModule(pl.LightningModule):
 
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
-        outputs = self(batch['images'], targets=batch['targets'])
+        model_inputs = batch.get('model_inputs') or {}
+        outputs = self(batch['images'], targets=batch['targets'], **model_inputs)
         sync_dist = stage != 'train'
         if 'pred_group_count' in outputs:
             self.log(f'{stage}/group_count', float(outputs['pred_group_count']), batch_size=batch['images'].shape[0], sync_dist=sync_dist)

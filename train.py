@@ -11,37 +11,17 @@ from pytorch_lightning.loggers import WandbLogger
 from callbacks.training_visualizer import ParametricEdgeVisualizer
 from callbacks.tracked_curve_visualizer import TrackedCurveVisualizer
 from edge_datasets import build_datamodule
+from misc_utils.checkpoint_loading import load_compatible_checkpoint, maybe_load_conditioned_curve_init
 from misc_utils.config_utils import load_config
 from pl_trainer.parametric_edge_trainer import ParametricEdgeLightningModule
 
 
 def load_pretrained_with_query_expansion(model: ParametricEdgeLightningModule, checkpoint_path: str) -> None:
-    checkpoint_file = Path(checkpoint_path)
-    if any(ch in checkpoint_path for ch in '*?[]'):
-        matches = sorted(checkpoint_file.parent.glob(checkpoint_file.name))
-        if not matches:
-            raise FileNotFoundError(f'No checkpoint matched pattern: {checkpoint_path}')
-        checkpoint_file = matches[0]
-    checkpoint = torch.load(checkpoint_file, map_location='cpu')
-    state_dict = checkpoint.get('state_dict', checkpoint)
-    model_state = model.state_dict()
-    updated = {}
-    for key, value in state_dict.items():
-        if key not in model_state:
-            continue
-        target = model_state[key]
-        if value.shape == target.shape:
-            updated[key] = value
-            continue
-        if key.endswith('model.query_embed.weight') and value.ndim == 2 and target.ndim == 2 and value.shape[1] == target.shape[1]:
-            count = min(value.shape[0], target.shape[0])
-            merged = target.clone()
-            merged[:count] = value[:count]
-            if count < target.shape[0]:
-                mean_query = value[:count].mean(dim=0, keepdim=True)
-                merged[count:] = mean_query
-            updated[key] = merged
-    model.load_state_dict(updated, strict=False)
+    stats = load_compatible_checkpoint(model, checkpoint_path)
+    print(
+        f"[train] loaded pretrained checkpoint {checkpoint_path}: "
+        f"loaded={stats['loaded']} skipped_missing={stats['skipped_missing']} skipped_shape={stats['skipped_shape']}"
+    )
 
 
 def build_loggers(config, root_dir: Path) -> List:
@@ -196,6 +176,15 @@ def main() -> None:
 
     datamodule = build_datamodule(config)
     model = ParametricEdgeLightningModule(config)
+    conditioned_init_stats = maybe_load_conditioned_curve_init(model, config)
+    if conditioned_init_stats is not None:
+        print(
+            "[train] loaded conditioned-curve init "
+            f"{config['model'].get('conditioned_curve_init_checkpoint')}: "
+            f"loaded={conditioned_init_stats['loaded']} "
+            f"skipped_missing={conditioned_init_stats['skipped_missing']} "
+            f"skipped_shape={conditioned_init_stats['skipped_shape']}"
+        )
     if config['model'].get('pretrained_checkpoint'):
         load_pretrained_with_query_expansion(model, config['model']['pretrained_checkpoint'])
     loggers = build_loggers(config, root_dir)

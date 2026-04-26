@@ -47,8 +47,9 @@ class ParametricEdgeVisualizer(pl.Callback):
     def _predict_curves(self, pl_module, batch):
         was_training = pl_module.training
         pl_module.eval()
+        model_inputs = batch.get('model_inputs') or {}
         with torch.no_grad():
-            predictions = pl_module(batch['images'], targets=batch['targets'])
+            predictions = pl_module(batch['images'], targets=batch['targets'], **model_inputs)
         if was_training:
             pl_module.train()
 

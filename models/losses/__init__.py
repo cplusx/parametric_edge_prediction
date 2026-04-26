@@ -1,6 +1,6 @@
 def build_loss_computer(config):
     arch = str(config.get('model', {}).get('arch', 'dab_curve_detr')).lower()
-    if arch == 'dab_curve_detr':
+    if arch in {'dab_curve_detr', 'dab_cond_curve_detr'}:
         from models.losses.composite import ParametricEdgeLossComputer
         return ParametricEdgeLossComputer(config)
     if arch == 'dab_endpoint_detr':

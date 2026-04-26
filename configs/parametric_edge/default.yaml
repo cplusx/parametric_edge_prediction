@@ -74,6 +74,8 @@ model:
   dab_query_scale_type: cond_elewise
   dab_curve_embed_diff_each_layer: false
   dab_query_modulation_mode: sine_proj
+  conditioned_curve_init_enabled: true
+  conditioned_curve_init_checkpoint: null
   curve_coord_min: -0.1
   curve_coord_max: 1.1
   object_bias: -2.0

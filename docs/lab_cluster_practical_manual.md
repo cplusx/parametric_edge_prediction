@@ -142,6 +142,16 @@ Current helper:
 
 It writes a launcher on `lab34` and starts it with `nohup`.
 
+Current direct lab34 launch scripts:
+
+- `run_lab34.sh`
+- `run_lab34_endpt.sh`
+- `run_lab34_conditioned_curve.sh`
+
+Current conditioned-curve training config on lab34:
+
+- `configs/parametric_edge/laion_conditioned_curve_pretrain_lab34_v3_2gpu.yaml`
+
 ## Resume Rule
 
 Current training entrypoint supports:

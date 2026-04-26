@@ -1,0 +1,69 @@
+data:
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /data/jiaxin/laion/edge_detection
+      image_root: /data/jiaxin/laion/edge_detection
+      bezier_root: /data/jiaxin/laion/edge_detection/laion_edge_v3_bezier
+      batch_glob: batch*
+      entry_cache_path: /data/jiaxin/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+      selection_seed: 20260318
+      selection_offset: 2048
+  val_dataset:
+    dataset_type: laion_synthetic
+    data_root: /data/jiaxin/laion/edge_detection
+    image_root: /data/jiaxin/laion/edge_detection
+    bezier_root: /data/jiaxin/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /data/jiaxin/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 0
+    max_samples: 1024
+  test_dataset:
+    dataset_type: laion_synthetic
+    data_root: /data/jiaxin/laion/edge_detection
+    image_root: /data/jiaxin/laion/edge_detection
+    bezier_root: /data/jiaxin/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /data/jiaxin/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 1024
+    max_samples: 1024
+
+model:
+  arch: dab_cond_curve_detr
+  curve_query_init_type: random
+  conditioned_curve_init_enabled: true
+  conditioned_curve_init_checkpoint: /data/jiaxin/parametric_edge_prediction/experiments/init_checkpoints/curve_dab_v3_cluster_line_last.ckpt
+
+trainer:
+  default_root_dir: /data/jiaxin/parametric_edge_prediction/outputs/laion-conditioned-curve-dab-v3-lab34
+  devices: 2
+  strategy: ddp_find_unused_parameters_true
+  precision: 32-true
+  accumulate_grad_batches: auto
+  effective_batch_size: 64
+
+loss:
+  edge_prob_cost: 0.5
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: false
+    project: laion_parametric_edge_prediction
+    name: laion-conditioned-curve-dab-v3-lab34
+    group: laion-conditioned-curve-dab-pretrain
+    job_type: train
+    tags:
+      - laion
+      - lab34
+      - 2gpu
+      - dab
+      - curve
+      - conditioned
+      - v3
+      - fp32
+      - edgeprob-match
+      - init-curve-dab
+    save_dir: /data/jiaxin/parametric_edge_prediction/outputs/laion-conditioned-curve-dab-v3-lab34/wandb

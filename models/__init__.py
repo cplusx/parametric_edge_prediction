@@ -4,9 +4,12 @@ def build_model(config):
     if arch == 'dab_curve_detr':
         from models.dab_curve_detr import DABCurveDETR
         return DABCurveDETR(config)
+    if arch == 'dab_cond_curve_detr':
+        from models.dab_cond_curve_detr import DABConditionedCurveDETR
+        return DABConditionedCurveDETR(config)
     if arch == 'dab_endpoint_detr':
         from models.dab_endpoint_detr import DABEndpointDETR
         return DABEndpointDETR(config)
-    raise ValueError(f'Unsupported model.arch: {arch}. Supported: dab_curve_detr, dab_endpoint_detr.')
+    raise ValueError(f'Unsupported model.arch: {arch}. Supported: dab_curve_detr, dab_cond_curve_detr, dab_endpoint_detr.')
 
 __all__ = ['build_model']
