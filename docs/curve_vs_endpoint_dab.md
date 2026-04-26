@@ -1,141 +1,202 @@
 # Curve DAB vs Endpoint DAB
 
-## Shared Backbone
+This document compares the current maintained versions of the two DAB branches.
 
-- both use `DABResNetBackbone`
-- both use `DABEncoder`
-- both use the same DAB-style decoder scaffold
-- both use the same class head shape: binary logits (`edge` / `no-object`)
-- both support DN and auxiliary decoder losses
+## Shared Pieces
 
-Code:
+Both branches share:
+
+- the same `train.py` entrypoint
+- the same config merge logic
+- the same datamodule factory / model factory / loss factory pattern
+- binary classification logits: `edge` vs `no-object`
+- the same logging and checkpoint flow in Lightning
+- optional DN and auxiliary losses in the training codebase
+
+Factories:
+
+- `edge_datasets/__init__.py`
+- `models/__init__.py`
+- `models/losses/__init__.py`
+
+## Curve DAB
+
+Model:
 
 - `models/dab_curve_detr.py`
-- `models/dab_endpoint_detr.py`
 
-## Training Target / Loss Differences
+Targets:
 
-### Curve DAB
+- `targets[i]['curves']`
 
-- predicts `pred_curves`
-- target is `curves`
-- matcher is `HungarianCurveMatcher`
-- matched losses:
-  - `loss_ce`
-  - `loss_chamfer`
-- DN regularizer reconstructs full curves:
-  - `loss_dn_curve`
+Dataset path:
 
-Code:
+- `edge_datasets/parametric_edge_dataset.py`
+- `edge_datasets/parametric_edge_datamodule.py`
+
+Matcher:
 
 - `models/matcher.py`
+
+Loss path:
+
 - `models/losses/composite.py`
 - `models/losses/matched.py`
 - `models/losses/regularizers.py`
 
-### Endpoint DAB
+Current geometry options:
 
-- predicts `pred_points`
-- target is `points`
-- matcher is `HungarianPointMatcher`
-- matched losses:
-  - `loss_ce`
-  - `loss_point`
-- DN regularizer reconstructs points:
-  - `loss_dn_point`
+- chamfer
+- EMD / Sinkhorn
 
-Code:
+Special current detail:
+
+- `model.curve_query_init_type` must be set explicitly
+- supported initializers live in `models/curve_query_initializers.py`
+
+## Endpoint DAB
+
+Model:
+
+- `models/dab_endpoint_detr.py`
+
+Targets:
+
+- `targets[i]['points']`
+
+Dataset path depends on endpoint target mode.
+
+### Point-Only Endpoint Branch
+
+Dataset path:
+
+- `edge_datasets/endpoint_dataset.py`
+- `edge_datasets/endpoint_datamodule.py`
+
+Matcher:
 
 - `models/endpoint_matcher.py`
+
+Loss path:
+
 - `models/losses/endpoint_composite.py`
 - `models/losses/endpoint_matched.py`
 - `models/losses/endpoint_regularizers.py`
 
-## Differences Outside Training Target / Loss
+### Attach Endpoint Branch
 
-### Model Parameterization
+Enabled by:
 
-- curve DAB decoder operates on full curve parameters
-  - `curve_dim = (target_degree + 1) * 2`
-  - reference embedding is one full curve per query
-- endpoint DAB decoder operates on one 2D point per query
-  - `curve_dim = 2`
-  - reference embedding is one point per query
+- `data.endpoint_target_mode: attach`
+- `loss.endpoint_loss_type: attach`
 
-Where:
+Dataset path:
 
-- `models/dab_curve_detr.py`
-- `models/dab_endpoint_detr.py`
+- `edge_datasets/endpoint_attach_dataset.py`
+- `edge_datasets/endpoint_attach_datamodule.py`
 
-### FFN Config
+Extra target fields carried by the attach branch:
 
-- curve DAB uses one shared `dim_feedforward`
-- endpoint DAB allows separate encoder / decoder FFN dims
-  - `encoder_dim_feedforward`
-  - `decoder_dim_feedforward`
+- `point_degree`
+- `point_is_loop_only`
+- `point_curve_offsets`
+- `point_curve_indices`
+- `curves`
 
-Where:
+Attach-specific code:
 
-- `models/dab_curve_detr.py`
-- `models/dab_endpoint_detr.py`
-- `configs/parametric_edge/laion_pretrain_cluster_dn_aux_ce.yaml`
-- `configs/parametric_edge/laion_endpoint_pretrain_dn_aux_ce.yaml`
+- target construction:
+  - `misc_utils/endpoint_target_utils.py`
+  - `edge_datasets/graph_pipeline.py`
+- attach-aware matching:
+  - `models/endpoint_matcher.py`
+- attach-aware matched loss:
+  - `models/losses/endpoint_matched.py`
+- geometry helpers:
+  - `models/geometry.py`
 
-### Auxiliary Output Shape
+## Main Differences
 
-- curve DAB aux outputs are `pred_curves`
-- endpoint DAB aux outputs are `pred_points`
-- endpoint DAB also supports `aux_last_n_layers`
+### Prediction Parameterization
 
-Where:
+Curve DAB:
 
-- `models/dab_curve_detr.py`
-- `models/dab_endpoint_detr.py`
+- each query predicts a full curve
+- output geometry is all control points
 
-### Visualization Callback
+Endpoint DAB:
 
-- curve DAB uses `ParametricEdgeVisualizer`
-- endpoint DAB uses `ParametricEndpointVisualizer`
-- visualization target differs:
-  - curves vs points
+- each query predicts a single 2D endpoint
+- in attach mode, curves are only GT-side supervision context, not predicted outputs
 
-Where:
+### Matching
+
+Curve DAB:
+
+- Hungarian matching over curve geometry cost plus edge-probability cost
+
+Endpoint DAB:
+
+- Hungarian matching over point distance plus edge-probability cost
+- attach mode can also inject distance to the GT endpoint's incident curves into matching
+
+### Matched Geometry Loss
+
+Curve DAB:
+
+- geometry loss is on curves
+- current options are chamfer or EMD
+
+Endpoint DAB:
+
+- base branch uses endpoint point loss
+- attach branch adds point-to-incident-curve attach distance
+- loop-only and low-degree endpoints are weighted differently from high-degree endpoints
+
+### Dataloader Semantics
+
+Curve DAB:
+
+- loader returns image + curve targets
+
+Endpoint DAB:
+
+- loader returns image + merged endpoint targets
+- attach mode additionally returns endpoint-to-curve incidence structure
+
+## Differences Outside Loss
+
+These are also different outside the training target itself.
+
+### Current Visualizers
+
+Curve DAB:
 
 - `callbacks/training_visualizer.py`
+
+Endpoint DAB:
+
 - `callbacks/endpoint_visualizer.py`
-- `train.py`
 
-### Dataset Output
+### Current Debug Scripts
 
-- curve DAB dataloader returns curve targets
-- endpoint DAB dataloader returns point targets
-- current endpoint pipeline derives points from v3 bezier curves; it does not read source-edge
+Curve-focused:
 
-Where:
+- `scripts/visualize_curve_query_initializers.py`
+- `scripts/test_curve_emd_experiments.py`
 
-- `edge_datasets/parametric_edge_dataset.py`
-- `edge_datasets/endpoint_dataset.py`
-- `edge_datasets/parametric_edge_datamodule.py`
-- `edge_datasets/endpoint_datamodule.py`
+Endpoint-focused:
+
+- `scripts/render_v3_endpoint_dataset_samples.py`
+- `scripts/debug_endpoint_attach_opt.py`
+- `scripts/profile_v3_endpoint_dataloader.py`
 
 ## What Is Not Different
 
-- optimizer structure
-- trainer entrypoint
-- logger construction logic
-- backbone normalization path
-- general DAB query refinement pattern
+These are still shared.
 
-## Current WandB Status
-
-The current `lab30` endpoint run had WandB disabled for two separate reasons:
-
-1. config disabled it:
-   - `configs/parametric_edge/laion_endpoint_pretrain_lab30_v3_2gpu.yaml`
-   - `logging.wandb.enabled: true` should be used
-
-2. launcher forced it off:
-   - `/home/viplab/jiaxin/parametric_edge_prediction/outputs/tmp_train_lab30_endpoint.sh`
-   - remove `export WANDB_MODE=disabled`
-
-So WandB was not failing to initialize; it had been explicitly turned off by config and by environment.
+- Lightning trainer construction in `train.py`
+- optimizer / scheduler config path
+- checkpointing and WandB setup
+- v3 bezier-cache-based dataset source
+- FP32-only training rule

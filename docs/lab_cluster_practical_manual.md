@@ -1,199 +1,166 @@
-# Lab Cluster Practical Manual
+# Lab / Cluster Practical Manual
 
-This is a practical manual for using the lab machine and the cluster through SLURM. It is intentionally general-purpose. It is not tied to one dataset or one cache-generation task.
+This is the current operations guide for this repo.
 
-## 1. Login path
+## Connectivity Rules
 
-Typical login chain:
+- local machine can ssh to lab machines
+- any lab machine can ssh to cluster
+- cluster cannot ssh back to lab machines
+- anything that moves from cluster to a lab machine must be relayed through a lab machine
+
+Current common path:
 
 ```bash
 log30
-```
-
-Then from the lab machine:
-
-```bash
 logcluster
 ```
 
-If these aliases do not exist, inspect shell startup files:
+## Current Repo Roots
 
-```bash
-grep -n 'log30\\|logcluster' ~/.zshrc ~/.bashrc 2>/dev/null
+Local:
+
+- `/Users/jiaxincheng/Desktop/expts/parametric_edge_prediction`
+
+Lab machines:
+
+- `lab30`: `/home/viplab/jiaxin/parametric_edge_prediction`
+- `lab34`: `/data/jiaxin/parametric_edge_prediction`
+
+Cluster:
+
+- `/home/user/yc47434/parametric_edge_prediction`
+
+## Current Data Roots
+
+Lab30:
+
+- `/home/devdata/laion/edge_detection`
+
+Lab34:
+
+- `/data/jiaxin/laion/edge_detection`
+
+Cluster:
+
+- `/home/user/yc47434/laion/edge_detection`
+
+## Conda Env Mapping
+
+Use `sam2` only for source-edge generation.
+
+Use `diffusers` for:
+
+- dataloader profiling
+- dataset rendering
+- DAB training
+- cluster training submits
+- lab34 training launches
+
+Current rule of thumb:
+
+- `sam2` = preprocessing from masks to source-edge
+- `diffusers` = bezier cache consumption and all training-side code
+
+## Current Preprocessing Flow
+
+```text
+images
+  -> SAM2 masks
+  -> source_edge PNGs
+  -> bezier NPZs
+  -> entry cache TXT
 ```
 
-## 2. Use tmux before doing anything long
+Current scripts:
 
-For anything interactive, long-running, or easy to disconnect from, start `tmux` first.
+- source-edge generation:
+  - `scripts/generate_source_edges_from_sam2_batch.py`
+- bezierization:
+  - `scripts/generate_bezier_from_source_edges_batch.py`
+- source-edge progress:
+  - `scripts/check_source_edge_progress.py`
+- bezier progress:
+  - `scripts/check_bezierization_progress.py`
+- sync completed results back to lab30:
+  - `scripts/sync_completed_results_to_lab30.py`
 
-Create:
+## Current Training Flow
 
-```bash
-tmux new -s work
+```text
+bezier NPZs
+  -> rewrite machine-local entry cache
+  -> train.py
 ```
 
-List:
+Required helper before training on a machine:
+
+- `scripts/rewrite_bezier_entry_cache.py`
+
+## Git Sync Workflow
+
+Current helper:
+
+- `scripts/sync_git_lab30_cluster.py`
+
+Expected order:
+
+1. commit locally
+2. push locally
+3. sync remotes
+4. submit / launch
+
+The sync script assumes local is the source of truth.
+
+## Cluster Submission Rules
+
+For this repo:
+
+- use committed submit helpers under `scripts/submit_jobs/`
+- cluster submission goes through `lab30 -> cluster`
+- training jobs are `sbatch` jobs
+- do not put `srun` inside the actual training sbatch body for launching the Python job
+- use absolute paths in batch scripts
+- use explicit conda activation in every batch script
+
+Current cluster submit helpers:
+
+- `scripts/submit_jobs/submit_curve_dab_cluster_train.py`
+- `scripts/submit_jobs/submit_curve_dab_cluster_train_line.py`
+- `scripts/submit_jobs/submit_curve_dab_cluster_train_emd_edgeprob05.py`
+- `scripts/submit_jobs/submit_curve_dab_cluster_train_emd_line.py`
+- `scripts/submit_jobs/submit_endpoint_attach_cluster_train.py`
+- `scripts/submit_jobs/submit_curve_dab_overfit8_cluster.py`
+
+## Lab Launch Rule
+
+Lab34 training is not a cluster job.
+
+Current helper:
+
+- `scripts/submit_jobs/submit_curve_dab_lab34_edgeprob05.py`
+
+It writes a launcher on `lab34` and starts it with `nohup`.
+
+## Resume Rule
+
+Current training entrypoint supports:
 
 ```bash
-tmux ls
+python train.py --config <config> --resume
 ```
 
-Attach:
+Meaning:
+
+- if `default_root_dir/checkpoints/last.ckpt` exists, resume from it
+- otherwise continue as a fresh run
+
+## Monitoring / Debugging
+
+Cluster queue:
 
 ```bash
-tmux attach -t work
-```
-
-Detach:
-
-```bash
-Ctrl-b d
-```
-
-## 3. Understand the cluster before choosing resources
-
-Start with:
-
-```bash
-sinfo -o '%20P %10a %10l %6D %10c %10m %N'
-sinfo -N -o '%20P %20N %8t %6c %10m %G'
-```
-
-What to look at:
-
-- partition name
-- time limit
-- number of nodes
-- CPUs per node
-- memory per node
-- whether the node is `idle`, `mix`, `alloc`, or `down`
-- whether the node belongs to a GPU partition
-
-Important habit:
-
-- do not assume the CPU-only partition is always best
-- do not assume GPU partitions are unusable for CPU-only jobs
-
-Some GPU nodes may have much higher CPU counts and still accept CPU-only jobs.
-
-## 4. Probe before the real run
-
-Before launching a large real job, run a small probe.
-
-The probe should test:
-
-- can the partition accept your resource request
-- does Python work on the compute node
-- does your conda environment exist there
-- is the repo path visible
-- is the output directory writable
-
-Example test-only submission:
-
-```bash
-sbatch --test-only -p gbunchQ -c 96 --mem=180G -t 02:00:00 --wrap='python -c "print(1)"'
-```
-
-Example tiny real probe script:
-
-```bash
-#!/bin/bash
-#SBATCH -J probe
-#SBATCH -p gbunchQ
-#SBATCH -c 4
-#SBATCH --mem=8G
-#SBATCH -t 00:10:00
-
-set -e
-source /home/user/<cluster_user>/anaconda3/etc/profile.d/conda.sh
-conda env list
-conda activate base
-which python
-python --version
-```
-
-## 5. Login node and compute node are not the same
-
-This is one of the most common failure modes.
-
-A job may fail immediately because:
-
-- `python` exists on the login node but not on the compute node
-- the conda environment name is wrong
-- the compute node does not inherit the shell setup you expect
-
-Safe pattern:
-
-```bash
-source /home/user/<cluster_user>/anaconda3/etc/profile.d/conda.sh
-conda activate base
-```
-
-Do not rely on a shell alias or PATH being present inside the compute node.
-
-## 6. Batch-first workflow for this repo
-
-For `parametric_edge_prediction`, use **`sbatch` only**.
-
-Training precision rule for the current repo:
-
-- use **FP32 only**
-- set `trainer.precision: 32-true`
-- do not submit `16-mixed`, `16-true`, `bf16`, or `bf16-mixed`
-
-Do not use `srun` for this repository's training workflow.
-
-Project-specific policy:
-
-- debug with short `sbatch` probes instead of interactive `srun`
-- keep launch logic in committed repo configs; do not add wrapper submit scripts for this repo
-- if training settings change, edit the repo config locally, commit it, and let the cluster pull it
-- keep temporary cluster task files and their outputs on the cluster checkout only; do not add a local tracked placeholder for them in the repo
-- keep cluster-only files limited to temporary batch scripts, logs, and runtime output directories
-
-## 7. Writing reliable batch jobs
-
-Recommended structure:
-
-```bash
-#!/bin/bash
-#SBATCH -J myjob
-#SBATCH -p <partition>
-#SBATCH -c <cpus>
-#SBATCH --mem=<memory>
-#SBATCH -t <time>
-#SBATCH -o /path/to/job.%j.out
-#SBATCH -e /path/to/job.%j.err
-
-set -e
-set +u
-source /home/user/<cluster_user>/anaconda3/etc/profile.d/conda.sh
-conda activate base
-set -u
-cd /home/user/<cluster_user>/<repo>
-python your_script.py
-```
-
-Recommendations:
-
-- write stdout/stderr to known locations
-- use absolute paths
-- if the environment has activate hooks that assume unset shell vars are allowed, wrap `conda activate` with `set +u` before it and restore `set -u` after it
-- make long preprocessing scripts skip outputs that already exist
-- split large workloads into a small number of large jobs rather than many tiny jobs
-
-## 8. Monitoring jobs
-
-Current jobs:
-
-```bash
-squeue -u <cluster_user> -o '%.18i %.10P %.20j %.8T %.10M %.6D %R'
-```
-
-Finished job summary:
-
-```bash
-sacct -j <jobid> --format=JobID,State,ExitCode,Elapsed,NodeList -P
+squeue -u yc47434 -o '%.18i %.10P %.20j %.8T %.10M %.6D %R'
 ```
 
 Detailed job record:
@@ -202,103 +169,20 @@ Detailed job record:
 scontrol show job <jobid>
 ```
 
-When a job fails quickly, always inspect:
-
-- `.out`
-- `.err`
-- `sacct`
-
-before resubmitting.
-
-## 9. Estimating remaining time
-
-For large preprocessing jobs:
-
-1. Count total inputs.
-2. Count completed outputs.
-3. Measure progress again after some time.
-4. Convert to items/hour.
-5. Estimate:
-
-```text
-remaining_time = remaining_items / current_items_per_hour
-```
-
-Be careful with two misleading phases:
-
-- warm-up / environment setup
-- skip-heavy phases where many outputs already exist
-
-If your script logs both `ok` and `skip`, use `ok` for a more accurate throughput estimate.
-
-## 10. Moving files between cluster and lab machine
-
-Often the cleanest pattern is:
-
-- compute on the cluster
-- sync back from the lab machine
-
-Example:
+Attach helper function for an allocated job:
 
 ```bash
-rsync -av <cluster_user>@<cluster_host>:/cluster/output/path/ /home/devdata/target/path/
+attach() {
+  srun --jobid "$1" --overlap --pty bash
+}
 ```
 
-For very long jobs, a watcher on the lab machine can:
+Use `attach <jobid>` from a cluster login shell.
 
-- poll cluster progress every few minutes
-- start `rsync` automatically when the final expected count is reached
+## Current Stable Rules
 
-## 11. Cleanup after the run
-
-Good things to clean:
-
-- probe scripts
-- temporary `sbatch` scripts
-- transient watcher scripts
-- temporary progress logs
-- debugging stdout/stderr files
-
-Do **not** delete:
-
-- final outputs
-- synchronized destination data
-- documentation or notes someone still needs
-
-## 12. Practical rules of thumb
-
-- Start with discovery, not assumptions.
-
-## 13. Repo-Specific Notes For Parametric Edge
-
-- Do not put hardware names like `h100` or `a40` into run names. Use model/data/batch semantics only.
-- If you need temporary `sbatch` files for this repo, keep them on the cluster checkout only, for example under `~/parametric_edge_prediction/cluster_tasks/`, and do not commit or mirror them locally.
-- LAION dataset discovery uses a text entry cache at `laion_entry_cache.txt` under the LAION data root. If the cache file exists, reuse it; if it does not, create it once at startup.
-- For this repo, cluster access should go through `log30` and then `logcluster`; do not assume direct access to the cluster login host from the local machine.
-- If a single `sbatch` allocation launches multiple GPU worker processes, do not hardcode `CUDA_VISIBLE_DEVICES=0` and `CUDA_VISIBLE_DEVICES=1` for the children. First read the job-level `CUDA_VISIBLE_DEVICES`, parse the GPUs SLURM actually assigned, and then pass those real IDs to the child processes. Log the original allocation and the per-worker mapping.
-
-## 14. Lessons From 2026-03-18
-
-Mistakes made today:
-
-- Requested `256G` for a 4-GPU job before checking the actual node layouts. That was unjustified and could unnecessarily restrict placement.
-- Assumed the target machine type from the run name instead of checking the real node configuration.
-- Reintroduced a repo-local wrapper submit script even though this repo should use direct `sbatch`.
-- Used `set -u` around `conda activate` in a non-interactive batch shell, which broke activation through `ADDR2LINE` in the environment hook.
-
-Correct workflow:
-
-- Check `sinfo -N` or `scontrol show node` before choosing `--gres`, `-c`, and `--mem`.
-- Distinguish scheduling failures from startup failures with `squeue`, `sacct`, `.out`, and `.err` before changing resources.
-- Submit training with plain `sbatch`; if a temporary script is needed, keep it only on the cluster checkout and keep it out of Git.
-- In batch jobs, use `set +u`, then `source .../conda.sh`, then `conda activate ...`, then restore `set -u`.
-- Use `srun --jobid ... --overlap` only as an attached monitoring step for a running allocation, not as the main launch path.
-- In multi-worker GPU preprocess jobs launched from one `sbatch`, use background Python processes plus `wait`, and bind each child from the parsed job-level `CUDA_VISIBLE_DEVICES` list instead of assuming local GPU indices.
-- Use `tmux` first.
-- Probe before large jobs.
-- Test GPU partitions for CPU-only jobs.
-- Use absolute paths in SLURM scripts.
-- Explicitly source conda inside jobs.
-- Use a small number of large batch jobs for huge offline preprocessing.
-- Monitor with both SLURM tools and output counts.
-- Clean temporary artifacts after success.
+- training is FP32 only
+- v3 bezier caches are the maintained training input
+- source-edge is preprocessing output, not training input
+- submit scripts should print the actual launch content before submission
+- if a workflow changes, update the matching doc in the same commit
