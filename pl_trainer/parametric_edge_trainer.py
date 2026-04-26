@@ -87,7 +87,9 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         scheduler_type = str(opt_cfg.get('scheduler', 'multistep')).lower()
         min_lr_ratio = float(opt_cfg.get('min_lr_ratio', 0.01))
 
-        if scheduler_type == 'cosine':
+        if scheduler_type in {'none', 'constant', 'fixed'}:
+            scheduler = None
+        elif scheduler_type == 'cosine':
             main_scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=max(1, max_epochs - warmup_epochs),
@@ -102,6 +104,9 @@ class ParametricEdgeLightningModule(pl.LightningModule):
                 milestones=[int(milestone) for milestone in milestones],
                 gamma=float(opt_cfg.get('lr_gamma', 0.1)),
             )
+
+        if scheduler is None:
+            return {'optimizer': optimizer}
 
         if warmup_epochs > 0:
             warmup_scheduler = LinearLR(
