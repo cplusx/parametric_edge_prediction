@@ -29,6 +29,22 @@ class ParametricEdgeLightningModule(pl.LightningModule):
         if datamodule is not None and hasattr(datamodule, 'set_epoch'):
             datamodule.set_epoch(self.current_epoch)
 
+    def on_fit_start(self) -> None:
+        opt_cfg = self.config.get('optimizer', {})
+        scheduler_type = str(opt_cfg.get('scheduler', 'multistep')).lower()
+        if scheduler_type not in {'none', 'constant', 'fixed'}:
+            return
+        base_lr = float(opt_cfg['lr'])
+        backbone_lr = float(opt_cfg.get('backbone_lr', base_lr))
+        for optimizer in self.trainer.optimizers:
+            for group in optimizer.param_groups:
+                group_name = str(group.get('group_name', 'main'))
+                target_lr = backbone_lr if group_name == 'backbone' else base_lr
+                group['lr'] = target_lr
+                if 'initial_lr' in group:
+                    group['initial_lr'] = target_lr
+        print(f"[train] fixed-lr mode active: reset optimizer lr to main={base_lr} backbone={backbone_lr}")
+
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
         outputs = self(batch['images'], targets=batch['targets'])
@@ -76,9 +92,9 @@ class ParametricEdgeLightningModule(pl.LightningModule):
 
         param_groups = []
         if other_params:
-            param_groups.append({'params': other_params, 'lr': base_lr, 'weight_decay': weight_decay})
+            param_groups.append({'params': other_params, 'lr': base_lr, 'weight_decay': weight_decay, 'group_name': 'main'})
         if backbone_params:
-            param_groups.append({'params': backbone_params, 'lr': backbone_lr, 'weight_decay': weight_decay})
+            param_groups.append({'params': backbone_params, 'lr': backbone_lr, 'weight_decay': weight_decay, 'group_name': 'backbone'})
 
         optimizer = torch.optim.AdamW(param_groups, betas=(beta1, beta2))
 
