@@ -14,7 +14,7 @@ from scripts.remote_hosts import run_lab30, wrap_cluster_cmd  # noqa: E402
 
 CLUSTER_REPO = "/home/user/yc47434/parametric_edge_prediction"
 CLUSTER_RUN_ROOT = "/home/user/yc47434/cluster_runs/parametric_edge_prediction"
-CONFIG_PATH = "configs/parametric_edge/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml"
+CONFIG_PATH = "configs/parametric_edge/archive/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml"
 SBATCH_PATH = f"{CLUSTER_REPO}/cluster_tasks/train_curve_dab_v3_2gpu_emd_line.sbatch"
 
 

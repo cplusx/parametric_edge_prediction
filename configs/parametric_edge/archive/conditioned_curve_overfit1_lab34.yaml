@@ -64,6 +64,9 @@ callbacks:
   visualization_score_threshold: 0.3
   visualization_max_curves: 300
 
+loss:
+  curve_distance_type: ordered
+
 logging:
   csv: true
   wandb:

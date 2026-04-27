@@ -44,6 +44,8 @@ trainer:
   effective_batch_size: 64
 
 loss:
+  curve_distance_type: ordered
+  ce_weight: 2.0
   edge_prob_cost: 0.5
 
 logging:

@@ -20,7 +20,7 @@ from pl_trainer.parametric_edge_trainer import ParametricEdgeLightningModule
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run one conditioned-curve forward pass and render predictions.')
-    parser.add_argument('--config', default='configs/parametric_edge/conditioned_curve_overfit1_lab34.yaml')
+    parser.add_argument('--config', default='configs/parametric_edge/archive/conditioned_curve_overfit1_lab34.yaml')
     parser.add_argument('--mode', choices=['train', 'val'], default='val')
     parser.add_argument('--output-dir', default='outputs/conditioned_curve_forward_once')
     parser.add_argument('--score-threshold', type=float, default=0.3)

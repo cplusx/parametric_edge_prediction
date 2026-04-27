@@ -64,8 +64,8 @@ Cluster, line query init:
 
 Cluster, EMD variants:
 
-- `configs/parametric_edge/laion_curve_pretrain_cluster_v3_2gpu_emd_edgeprob05.yaml`
-- `configs/parametric_edge/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml`
+- `configs/parametric_edge/archive/laion_curve_pretrain_cluster_v3_2gpu_emd_edgeprob05.yaml`
+- `configs/parametric_edge/archive/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml`
 
 Lab machines:
 

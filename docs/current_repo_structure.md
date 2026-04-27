@@ -149,8 +149,8 @@ Maintained configs under `configs/parametric_edge/`:
 - curve DAB, cluster, line init
   - `laion_curve_pretrain_cluster_v3_2gpu_line.yaml`
 - curve DAB, cluster, EMD variants
-  - `laion_curve_pretrain_cluster_v3_2gpu_emd_edgeprob05.yaml`
-  - `laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml`
+  - `archive/laion_curve_pretrain_cluster_v3_2gpu_emd_edgeprob05.yaml`
+  - `archive/laion_curve_pretrain_cluster_v3_2gpu_emd_line.yaml`
 - curve DAB, lab machines
   - `laion_curve_pretrain_lab30_v3_2gpu.yaml`
   - `laion_curve_pretrain_lab34_v3_edgeprob05.yaml`

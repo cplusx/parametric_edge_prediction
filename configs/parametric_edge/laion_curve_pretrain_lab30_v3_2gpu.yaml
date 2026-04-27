@@ -41,6 +41,9 @@ trainer:
   accumulate_grad_batches: auto
   effective_batch_size: 64
 
+loss:
+  curve_distance_type: ordered
+
 logging:
   csv: true
   wandb:
