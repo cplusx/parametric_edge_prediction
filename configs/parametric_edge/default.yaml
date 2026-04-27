@@ -84,7 +84,7 @@ loss:
   class_loss_type: focal
   focal_alpha: 0.5
   focal_gamma: 1.0
-  curve_distance_type: chamfer
+  curve_distance_type: ordered
   curve_cost: null
   curve_weight: null
   chamfer_cost: 5.0

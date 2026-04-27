@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="/data/jiaxin/parametric_edge_prediction"
 DATA_ROOT="/data/jiaxin/laion/edge_detection"
-CONFIG_PATH="configs/parametric_edge/laion_conditioned_curve_ordered_lab34_v3_2gpu.yaml"
+CONFIG_PATH="configs/parametric_edge/laion_conditioned_curve_pretrain_lab34_v3_2gpu.yaml"
 
 set +u
 source /home/viplab/anaconda3/etc/profile.d/conda.sh

@@ -33,7 +33,7 @@ model:
   arch: dab_cond_curve_detr
   curve_query_init_type: random
   conditioned_curve_init_enabled: true
-  conditioned_curve_init_checkpoint: /data/jiaxin/parametric_edge_prediction/experiments/init_checkpoints/curve_dab_v3_cluster_line_last.ckpt
+  conditioned_curve_init_checkpoint: /data/jiaxin/parametric_edge_prediction/outputs/laion-conditioned-curve-dab-v3-lab34/checkpoints/last.ckpt
 
 trainer:
   default_root_dir: /data/jiaxin/parametric_edge_prediction/outputs/laion-conditioned-curve-dab-v3-lab34
@@ -65,5 +65,6 @@ logging:
       - v3
       - fp32
       - edgeprob-match
-      - init-curve-dab
+      - ordered
+      - init-conditioned-curve
     save_dir: /data/jiaxin/parametric_edge_prediction/outputs/laion-conditioned-curve-dab-v3-lab34/wandb

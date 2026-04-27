@@ -75,7 +75,7 @@ def submit(sbatch_text: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Print or submit the 2-GPU cluster curve DAB chamfer line-init training job.")
+    parser = argparse.ArgumentParser(description="Print or submit the 2-GPU cluster curve DAB ordered-distance line-init training job.")
     parser.add_argument("--submit", action="store_true", help="actually submit after printing")
     args = parser.parse_args()
 

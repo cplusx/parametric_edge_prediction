@@ -60,5 +60,5 @@ logging:
       - dn
       - aux
       - ce
-      - chamfer
+      - ordered
     save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-dn-aux-ce/wandb
