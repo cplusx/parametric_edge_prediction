@@ -111,6 +111,9 @@ class HungarianCurveMatcher:
         if self.curve_distance_type == "emd":
             out["emd_raw"] = curve_cost_matrix
             out["emd"] = curve_weighted
+        elif self.curve_distance_type in {"ordered", "ordered_bidirectional"}:
+            out["ordered_raw"] = curve_cost_matrix
+            out["ordered"] = curve_weighted
         else:
             out["chamfer_raw"] = curve_cost_matrix
             out["chamfer"] = curve_weighted

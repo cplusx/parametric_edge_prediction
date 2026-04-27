@@ -19,7 +19,13 @@ class ParametricEdgeLossComputer:
     def _add_weighted_term_logs(self, log_values: Dict, loss_cfg: Dict) -> None:
         class_loss_name = classification_loss_name_from_config(self.config)
         curve_loss_name = curve_loss_name_from_config(self.config)
-        curve_weight_key = 'emd_weight' if curve_distance_type_from_config(self.config) == 'emd' else 'chamfer_weight'
+        curve_distance_type = curve_distance_type_from_config(self.config)
+        if curve_distance_type == 'emd':
+            curve_weight_key = 'emd_weight'
+        elif curve_distance_type in {'ordered', 'ordered_bidirectional'}:
+            curve_weight_key = 'ordered_weight'
+        else:
+            curve_weight_key = 'chamfer_weight'
         term_weight_keys = {
             class_loss_name: 'ce_weight',
             curve_loss_name: curve_weight_key,
@@ -51,6 +57,9 @@ class ParametricEdgeLossComputer:
         if curve_distance_type == 'emd':
             selected['matching_cost_emd_raw'] = []
             selected['matching_cost_emd'] = []
+        elif curve_distance_type in {'ordered', 'ordered_bidirectional'}:
+            selected['matching_cost_ordered_raw'] = []
+            selected['matching_cost_ordered'] = []
         else:
             selected['matching_cost_chamfer_raw'] = []
             selected['matching_cost_chamfer'] = []
@@ -75,6 +84,9 @@ class ParametricEdgeLossComputer:
             if curve_distance_type == 'emd':
                 selected['matching_cost_emd_raw'].append(components['emd_raw'][local_idx, local_idx])
                 selected['matching_cost_emd'].append(components['emd'][local_idx, local_idx])
+            elif curve_distance_type in {'ordered', 'ordered_bidirectional'}:
+                selected['matching_cost_ordered_raw'].append(components['ordered_raw'][local_idx, local_idx])
+                selected['matching_cost_ordered'].append(components['ordered'][local_idx, local_idx])
             else:
                 selected['matching_cost_chamfer_raw'].append(components['chamfer_raw'][local_idx, local_idx])
                 selected['matching_cost_chamfer'].append(components['chamfer'][local_idx, local_idx])

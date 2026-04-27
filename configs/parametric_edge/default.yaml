@@ -92,6 +92,11 @@ loss:
   chamfer_weight: 5.0
   chamfer_num_samples: 20
   chamfer_match_point_count: 20
+  ordered_cost: 5.0
+  ordered_weight: 5.0
+  ordered_num_samples: 20
+  ordered_match_point_count: 20
+  ordered_chunk_size: null
   emd_cost: 5.0
   emd_weight: 5.0
   emd_num_samples: 20

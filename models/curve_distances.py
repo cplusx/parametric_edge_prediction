@@ -80,6 +80,8 @@ def curve_loss_name_from_config(config: Dict) -> str:
     curve_type = curve_distance_type_from_config(config)
     if curve_type == "emd":
         return "loss_emd"
+    if curve_type in {"ordered", "ordered_bidirectional"}:
+        return "loss_ordered"
     return "loss_chamfer"
 
 
@@ -91,6 +93,8 @@ def curve_matching_cost_weight_from_config(config: Dict) -> float:
         return float(curve_cost)
     if curve_type == "emd":
         return float(loss_cfg.get("emd_cost", loss_cfg.get("chamfer_cost", 5.0)))
+    if curve_type in {"ordered", "ordered_bidirectional"}:
+        return float(loss_cfg.get("ordered_cost", loss_cfg.get("chamfer_cost", 5.0)))
     return float(loss_cfg.get("chamfer_cost", 5.0))
 
 
@@ -102,6 +106,8 @@ def curve_loss_weight_from_config(config: Dict, *, overrides: Optional[Dict[str,
         return float(curve_weight)
     if curve_type == "emd":
         return float(weight_cfg.get("emd_weight", weight_cfg.get("chamfer_weight", 5.0)))
+    if curve_type in {"ordered", "ordered_bidirectional"}:
+        return float(weight_cfg.get("ordered_weight", weight_cfg.get("chamfer_weight", 5.0)))
     return float(weight_cfg.get("chamfer_weight", 5.0))
 
 
@@ -129,6 +135,10 @@ def _sample_count_from_config(config: Dict, *, for_matching: bool) -> int:
         specific_key = "emd_match_point_count" if for_matching else "emd_num_samples"
         fallback_key = "chamfer_match_point_count" if for_matching else "chamfer_num_samples"
         return int(loss_cfg.get(specific_key, loss_cfg.get(fallback_key, 20)))
+    if curve_type in {"ordered", "ordered_bidirectional"}:
+        specific_key = "ordered_match_point_count" if for_matching else "ordered_num_samples"
+        fallback_key = "chamfer_match_point_count" if for_matching else "chamfer_num_samples"
+        return int(loss_cfg.get(specific_key, loss_cfg.get(fallback_key, 20)))
     fallback_key = "chamfer_match_point_count" if for_matching else "chamfer_num_samples"
     return int(loss_cfg.get(fallback_key, 20))
 
@@ -145,6 +155,11 @@ def build_curve_distance_from_config(config: Dict, *, for_matching: bool):
             length_weight=float(loss_cfg.get("emd_length_weight", 1.0)),
             transport_presence_power=float(loss_cfg.get("emd_transport_presence_power", 0.5)),
             chunk_size=loss_cfg.get("emd_chunk_size"),
+        )
+    if curve_type in {"ordered", "ordered_bidirectional"}:
+        return OrderedBidirectionalCurveDistance(
+            num_samples=sample_count,
+            chunk_size=loss_cfg.get("ordered_chunk_size"),
         )
     return ChamferCurveDistance(num_samples=sample_count)
 
@@ -209,6 +224,126 @@ class ChamferCurveDistance:
         pred_to_tgt = pairwise.min(dim=3).values.mean(dim=2)
         tgt_to_pred = pairwise.min(dim=2).values.mean(dim=2)
         total = 0.5 * (pred_to_tgt + tgt_to_pred)
+        return {
+            "total": total,
+            "primary": total,
+        }
+
+
+class OrderedBidirectionalCurveDistance:
+    def __init__(self, *, num_samples: int = 20, chunk_size: Optional[int] = None) -> None:
+        self.num_samples = int(num_samples)
+        self.chunk_size = None if chunk_size is None else int(chunk_size)
+
+    def sample_curves(self, curves: torch.Tensor) -> torch.Tensor:
+        return sample_bezier_curves_torch(curves, num_samples=self.num_samples)
+
+    @staticmethod
+    def _forward_reverse_open_cost(pred_samples: torch.Tensor, tgt_samples: torch.Tensor) -> torch.Tensor:
+        forward = (pred_samples - tgt_samples).norm(dim=-1).mean(dim=1)
+        reverse = (pred_samples - tgt_samples.flip(dims=(1,))).norm(dim=-1).mean(dim=1)
+        return torch.minimum(forward, reverse)
+
+    @staticmethod
+    def _cyclic_cost(pred_samples: torch.Tensor, tgt_samples: torch.Tensor) -> torch.Tensor:
+        num_samples = int(pred_samples.shape[1])
+        forward_costs = []
+        reverse_base = tgt_samples.flip(dims=(1,))
+        reverse_costs = []
+        for shift in range(num_samples):
+            forward_shifted = torch.roll(tgt_samples, shifts=shift, dims=1)
+            reverse_shifted = torch.roll(reverse_base, shifts=shift, dims=1)
+            forward_costs.append((pred_samples - forward_shifted).norm(dim=-1).mean(dim=1))
+            reverse_costs.append((pred_samples - reverse_shifted).norm(dim=-1).mean(dim=1))
+        forward_min = torch.stack(forward_costs, dim=1).min(dim=1).values
+        reverse_min = torch.stack(reverse_costs, dim=1).min(dim=1).values
+        return torch.minimum(forward_min, reverse_min)
+
+    def matched_cost_from_samples(
+        self,
+        pred_samples: torch.Tensor,
+        tgt_samples: torch.Tensor,
+        *,
+        target_is_closed: Optional[torch.Tensor] = None,
+    ) -> CurveDistanceOutput:
+        if pred_samples.shape != tgt_samples.shape:
+            raise ValueError(
+                f"pred_samples and tgt_samples must share shape, got {tuple(pred_samples.shape)} vs {tuple(tgt_samples.shape)}"
+            )
+        batch_size = int(pred_samples.shape[0])
+        closed = _normalize_closed_flags(target_is_closed, batch_size, device=pred_samples.device)
+        open_cost = self._forward_reverse_open_cost(pred_samples, tgt_samples)
+        if bool(closed.any()):
+            closed_cost = self._cyclic_cost(pred_samples, tgt_samples)
+            total = torch.where(closed, closed_cost, open_cost)
+        else:
+            total = open_cost
+        return CurveDistanceOutput(total=total, primary=total)
+
+    def matched_cost_from_curves(
+        self,
+        pred_curves: torch.Tensor,
+        tgt_curves: torch.Tensor,
+        *,
+        target_is_closed: Optional[torch.Tensor] = None,
+    ) -> CurveDistanceOutput:
+        return self.matched_cost_from_samples(
+            self.sample_curves(pred_curves),
+            self.sample_curves(tgt_curves),
+            target_is_closed=target_is_closed,
+        )
+
+    def pairwise_cost_from_curves(
+        self,
+        pred_curves: torch.Tensor,
+        tgt_curves: torch.Tensor,
+        *,
+        target_is_closed: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        return self.pairwise_cost_from_samples(
+            self.sample_curves(pred_curves),
+            self.sample_curves(tgt_curves),
+            target_is_closed=target_is_closed,
+        )
+
+    def pairwise_cost_from_samples(
+        self,
+        pred_samples: torch.Tensor,
+        tgt_samples: torch.Tensor,
+        *,
+        target_is_closed: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        if pred_samples.ndim != 3 or tgt_samples.ndim != 3:
+            raise ValueError(
+                f"Expected pred/tgt samples with shape [B, N, 2], got {tuple(pred_samples.shape)} vs {tuple(tgt_samples.shape)}"
+            )
+        pred_count, num_samples, _ = pred_samples.shape
+        tgt_count, tgt_num_samples, _ = tgt_samples.shape
+        if num_samples != tgt_num_samples:
+            raise ValueError(f"Sample count mismatch: {num_samples} vs {tgt_num_samples}")
+        if pred_count == 0 or tgt_count == 0:
+            zero = pred_samples.new_zeros((pred_count, tgt_count))
+            return {
+                "total": zero,
+                "primary": zero,
+            }
+
+        pair_total = pred_count * tgt_count
+        chunk_size = pair_total if self.chunk_size is None else max(1, self.chunk_size)
+        pred_indices = torch.arange(pred_count, device=pred_samples.device)[:, None].expand(pred_count, tgt_count).reshape(-1)
+        tgt_indices = torch.arange(tgt_count, device=tgt_samples.device)[None, :].expand(pred_count, tgt_count).reshape(-1)
+        closed = _normalize_closed_flags(target_is_closed, tgt_count, device=tgt_samples.device)
+        pair_closed = closed[tgt_indices]
+        chunks = []
+        for start in range(0, pair_total, chunk_size):
+            end = min(pair_total, start + chunk_size)
+            chunk = self.matched_cost_from_samples(
+                pred_samples[pred_indices[start:end]],
+                tgt_samples[tgt_indices[start:end]],
+                target_is_closed=pair_closed[start:end],
+            )
+            chunks.append(chunk.total)
+        total = torch.cat(chunks, dim=0).reshape(pred_count, tgt_count)
         return {
             "total": total,
             "primary": total,
