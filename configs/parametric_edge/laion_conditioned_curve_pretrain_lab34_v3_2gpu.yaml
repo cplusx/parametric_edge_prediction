@@ -46,7 +46,7 @@ trainer:
 loss:
   curve_distance_type: ordered
   ce_weight: 2.0
-  edge_prob_cost: 0.5
+  edge_prob_cost: 1.0
 
 logging:
   csv: true
