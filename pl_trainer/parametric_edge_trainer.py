@@ -45,6 +45,28 @@ class ParametricEdgeLightningModule(pl.LightningModule):
                     group['initial_lr'] = target_lr
         print(f"[train] fixed-lr mode active: reset optimizer lr to main={base_lr} backbone={backbone_lr}")
 
+    def on_load_checkpoint(self, checkpoint: Dict) -> None:
+        opt_cfg = self.config.get('optimizer', {})
+        scheduler_type = str(opt_cfg.get('scheduler', 'multistep')).lower()
+        if scheduler_type not in {'none', 'constant', 'fixed'}:
+            return
+        optimizer_states = checkpoint.get('optimizer_states')
+        if not optimizer_states:
+            return
+        base_lr = float(opt_cfg['lr'])
+        backbone_lr = float(opt_cfg.get('backbone_lr', base_lr))
+        for optimizer_state in optimizer_states:
+            for group in optimizer_state.get('param_groups', []):
+                group_name = str(group.get('group_name', 'main'))
+                target_lr = backbone_lr if group_name == 'backbone' else base_lr
+                group['lr'] = target_lr
+                if 'initial_lr' in group:
+                    group['initial_lr'] = target_lr
+        print(
+            f"[train] fixed-lr mode active: patched checkpoint optimizer lr "
+            f"to main={base_lr} backbone={backbone_lr}"
+        )
+
     def _shared_step(self, batch: Dict, stage: str) -> torch.Tensor:
         self.model.set_epoch(self.current_epoch)
         model_inputs = batch.get('model_inputs') or {}
