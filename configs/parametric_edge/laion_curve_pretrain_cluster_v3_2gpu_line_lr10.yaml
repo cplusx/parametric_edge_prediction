@@ -1,0 +1,74 @@
+data:
+  extra_train_datasets:
+    - dataset_type: laion_synthetic
+      data_root: /home/user/yc47434/laion/edge_detection
+      image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+      bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+      batch_glob: batch*
+      entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+      selection_seed: 20260318
+      selection_offset: 2048
+  val_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 0
+    max_samples: 1024
+  test_dataset:
+    dataset_type: laion_synthetic
+    data_root: /home/user/yc47434/laion/edge_detection
+    image_root: /home/user/yc47434/laion/edge_detection/edge_detection
+    bezier_root: /home/user/yc47434/laion/edge_detection/laion_edge_v3_bezier
+    batch_glob: batch*
+    entry_cache_path: /home/user/yc47434/laion/edge_detection/laion_entry_cache_v3_bezier.txt
+    selection_seed: 20260318
+    selection_offset: 1024
+    max_samples: 1024
+
+model:
+  curve_query_init_type: line
+
+trainer:
+  default_root_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-line-lr10
+  devices: 2
+  strategy: ddp_find_unused_parameters_true
+  precision: 32-true
+  accumulate_grad_batches: auto
+  effective_batch_size: 64
+
+loss:
+  curve_distance_type: ordered
+
+optimizer:
+  lr: 0.000002
+  backbone_lr: 0.000001
+
+logging:
+  csv: true
+  wandb:
+    enabled: true
+    offline: false
+    project: laion_parametric_edge_prediction
+    name: laion-dab-v3-cluster-2gpu-line-lr10
+    group: laion-dab-pretrain
+    job_type: train
+    tags:
+      - laion
+      - cluster
+      - 2gpu
+      - dab
+      - curve
+      - v3
+      - fp32
+      - dn
+      - aux
+      - ce
+      - ordered
+      - line-init
+      - lr10
+      - successor
+    save_dir: /home/user/yc47434/cluster_runs/parametric_edge_prediction/laion-dab-v3-cluster-2gpu-line-lr10/wandb
