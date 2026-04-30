@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -35,7 +35,7 @@ def _build_condition_points(
     return np.asarray(endpoint_targets['points'], dtype=np.float32)
 
 
-def _pad_condition_points(condition_points_list: List[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+def _pad_condition_points(condition_points_list: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
     batch_size = len(condition_points_list)
     max_count = max((int(points.shape[0]) for points in condition_points_list), default=0)
     if max_count <= 0:
